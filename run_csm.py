@@ -47,8 +47,11 @@ def prepare_prompt(text: str, speaker: int, audio_path: str, sample_rate: int) -
     return Segment(text=text, speaker=speaker, audio=audio_tensor)
 
 def main():
-    # Force CPU usage for Apple Silicon Macs to avoid MPS issues
-    device = "cpu"
+    # Select the best available device, skipping MPS due to float64 limitations
+    if torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
     print(f"Using device: {device}")
     
     try:

@@ -12,7 +12,7 @@ A hosted [HuggingFace space](https://huggingface.co/spaces/sesame/csm-1b) is als
 
 ## Requirements
 
-* A CUDA-compatible GPU
+* A CUDA-compatible GPU (runs on CPU otherwise)
 * The code has been tested on CUDA 12.4 and 12.6, but it may also work on other versions
 * Similarly, Python 3.10 is recommended, but newer versions may be fine
 * For some audio operations, `ffmpeg` may be required
@@ -59,25 +59,19 @@ mkdir -p prompts
 https://huggingface.co/spaces/sesame/csm-1b/tree/main/prompts
 ```
 
-### Interactive Web Interface
+### Quick Start
 
-Run the Gradio web interface for an interactive experience:
+Run the model using the command line interface:
 
 ```bash
 # Option 1: Set environment variable when running
-NO_TORCH_COMPILE=1 python run_csm_gradio.py
+NO_TORCH_COMPILE=1 python run_csm.py
 
 # Option 2: Run normally (environment variable is set in the script)
-python run_csm_gradio.py
+python run_csm.py
 ```
 
-This will launch a web interface where you can:
-- Choose or customize voice prompts for both speakers
-- Upload or record your own voice prompts
-- Enter a conversation with alternating lines between speakers
-- Generate and play the conversation audio directly in the browser
-
-The interface will automatically use CUDA if available for faster generation,
+The script will automatically use CUDA if available for faster generation,
 otherwise it will fall back to CPU mode.
 
 ### Python API
@@ -94,7 +88,6 @@ import torch
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-generator = load_csm_1b(model_path, device)
 generator = load_csm_1b(model_path, device)
 audio = generator.generate(
     text="Hello from Sesame.",
