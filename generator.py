@@ -9,6 +9,7 @@ from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+import os
 
 
 @dataclass
@@ -24,7 +25,10 @@ def load_llama3_tokenizer():
     https://github.com/huggingface/transformers/issues/22794#issuecomment-2092623992
     """
     tokenizer_name = "meta-llama/Llama-3.2-1B"
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_name,
+        token = os.getenv("HF_API_TOKEN"),
+    )
     bos = tokenizer.bos_token
     eos = tokenizer.eos_token
     tokenizer._tokenizer.post_processor = TemplateProcessing(
