@@ -1,10 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import torch
 import torch.nn as nn
 import torchtune
+from huggingface_hub import PyTorchModelHubMixin
 from torchtune.models import llama3_2
-
 
 def llama3_2_1B() -> torchtune.modules.transformer.TransformerDecoder:
     return llama3_2.llama3_2(
@@ -95,7 +95,20 @@ class ModelArgs:
     audio_num_codebooks: int
 
 
-class Model(nn.Module):
+class Model(
+    nn.Module,
+    PyTorchModelHubMixin,
+    repo_url="https://github.com/SesameAILabs/csm",
+    pipeline_tag="text-to-speech",
+    license="apache-2.0",
+    coders={
+      # Tells the class how to serialize and deserialize config.json
+      ModelArgs : (
+         lambda x: asdict(x),  # Encoder: how to convert a `ModelArgs` to a valid jsonable value?
+         lambda data: ModelArgs(**data),  # Decoder: how to reconstruct a `ModelArgs` from a dictionary?
+      )
+   }
+):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args

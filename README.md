@@ -36,12 +36,11 @@ The `triton` package cannot be installed in Windows. Instead use `pip install tr
 Generate a sentence
 
 ```python
-from huggingface_hub import hf_hub_download
-from generator import load_csm_1b
 import torchaudio
+from generator import load_csm_1b
 
-model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-generator = load_csm_1b(model_path, "cuda")
+generator = load_csm_1b(device="cuda")
+
 audio = generator.generate(
     text="Hello from Sesame.",
     speaker=0,
