@@ -1,6 +1,6 @@
 # CSM
 
-**2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on Hugging Face](https://huggingface.co/sesame/csm_1b).
+**2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on HuggingFace](https://huggingface.co/sesame/csm_1b).
 
 ---
 
@@ -8,32 +8,69 @@ CSM (Conversational Speech Model) is a speech generation model from [Sesame](htt
 
 A fine-tuned variant of CSM powers the [interactive voice demo](https://www.sesame.com/voicedemo) shown in our [blog post](https://www.sesame.com/research/crossing_the_uncanny_valley_of_voice).
 
-A hosted [Hugging Face space](https://huggingface.co/spaces/sesame/csm-1b) is also available for testing audio generation.
+A hosted [HuggingFace space](https://huggingface.co/spaces/sesame/csm-1b) is also available for testing audio generation.
 
-## Requirements
-
-* A CUDA-compatible GPU
-* The code has been tested on CUDA 12.4 and 12.6, but it may also work on other versions
-* Simiarly, Python 3.10 is recommended, but newer versions may be fine
-* For some audio operations, `ffmpeg` may be required
+## Usage
 
 ### Setup
+
+Clone and setup the repo:
 
 ```bash
 git clone git@github.com:SesameAILabs/csm.git
 cd csm
 python3.10 -m venv .venv
 source .venv/bin/activate
+
+# Set environment variable to disable Triton compilation
+export NO_TORCH_COMPILE=1
+
 pip install -r requirements.txt
 ```
 
-### Windows Setup
+Install ffmpeg (required for audio processing):
 
-The `triton` package cannot be installed in Windows. Instead use `pip install triton-windows`.
+```bash
+# On macOS with Homebrew
+brew install ffmpeg
 
-## Usage
+# On Ubuntu/Debian
+sudo apt-get install ffmpeg
 
-Generate a sentence
+# On Windows
+# Download from https://ffmpeg.org/download.html
+```
+
+Download the required prompt audio files:
+
+```bash
+# Create prompts directory
+mkdir -p prompts
+
+# Download prompt files and place them in the prompts directory
+https://huggingface.co/spaces/sesame/csm-1b/tree/main/prompts
+```
+
+### Interactive Web Interface
+
+Run the Gradio web interface for an interactive experience:
+
+```bash
+# Option 1: Set environment variable when running
+NO_TORCH_COMPILE=1 python run_csm_gradio.py
+
+# Option 2: Run normally (environment variable is set in the script)
+python run_csm_gradio.py
+```
+
+This will launch a web interface where you can:
+- Choose or customize voice prompts for both speakers
+- Enter a conversation with alternating lines between speakers
+- Generate and play the conversation audio directly in the browser
+
+### Python API
+
+Generate a single utterance:
 
 ```python
 from huggingface_hub import hf_hub_download
@@ -52,7 +89,7 @@ audio = generator.generate(
 torchaudio.save("audio.wav", audio.unsqueeze(0).cpu(), generator.sample_rate)
 ```
 
-CSM sounds best when provided with context. You can prompt or provide context to the model using a `Segment` for each speaker utterance.
+For context-based generation, use `Segment` objects:
 
 ```python
 speakers = [0, 1, 0, 0]
