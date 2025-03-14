@@ -12,6 +12,17 @@ A hosted [HuggingFace space](https://huggingface.co/spaces/sesame/csm-1b) is als
 
 ## Usage
 
+Setup HuggingFace
+
+To use the CSM model, you need to set up HuggingFace and have access to the following repositories:
+- [Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B)
+- [CSM-1B](https://huggingface.co/sesame/csm-1b)
+
+1. Create a HuggingFace account if you don't have one already.
+2. Visit the repository links above and request access if needed.
+3. Install the HuggingFace CLI by running `pip install huggingface_hub`.
+4. Log in using the CLI with the command `huggingface-cli login` and follow the prompts to authenticate.
+
 Setup the repo
 
 ```bash
@@ -30,7 +41,7 @@ from generator import load_csm_1b
 import torchaudio
 
 model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-generator = load_csm_1b(model_path, "cuda")
+generator = load_csm_1b(model_path, "cuda") # Use "mps" for Apple Silicon or "cpu" for Intel MacBooks
 audio = generator.generate(
     text="Hello from Sesame.",
     speaker=0,
