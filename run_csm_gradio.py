@@ -46,7 +46,10 @@ SPEAKER_PROMPTS = {
     }
 }
 
-device = "cpu"  # Force CPU for compatibility
+# Setup device - prefer CUDA, fallback to CPU
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
 model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
 generator = load_csm_1b(model_path, device)
 

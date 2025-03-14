@@ -73,8 +73,12 @@ python run_csm_gradio.py
 
 This will launch a web interface where you can:
 - Choose or customize voice prompts for both speakers
+- Upload or record your own voice prompts
 - Enter a conversation with alternating lines between speakers
 - Generate and play the conversation audio directly in the browser
+
+The interface will automatically use CUDA if available for faster generation,
+otherwise it will fall back to CPU mode.
 
 ### Python API
 
@@ -86,13 +90,11 @@ from generator import load_csm_1b
 import torchaudio
 import torch
 
-if torch.backends.mps.is_available():
-    device = "mps"
-elif torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
+# Use CUDA if available, otherwise CPU
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
+generator = load_csm_1b(model_path, device)
 generator = load_csm_1b(model_path, device)
 audio = generator.generate(
     text="Hello from Sesame.",
