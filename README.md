@@ -39,9 +39,9 @@ The `triton` package cannot be installed in Windows. Instead use `pip install tr
 Generate a sentence
 
 ```python
+from generator import load_csm_1b
 import torchaudio
 import torch
-from generator import load_csm_1b
 
 if torch.backends.mps.is_available():
     device = "mps"
