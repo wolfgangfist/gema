@@ -17,10 +17,10 @@ This is a fork of the original CSM project that creates a complete Gradio-based 
 
 ### Model Loading Improvements
 
-The original project had issues loading the Llama-3.2-1B model on Windows because:
+The original project had issues loading the models because:
 
-1. The model is gated on HuggingFace and requires authentication
-2. The Windows version had path compatibility issues
+1. The models are gated on HuggingFace and require authentication
+2. The Windows version had compatibility issues
 3. The tokenizer wasn't configured to use local files
 
 Our solution:
@@ -47,11 +47,11 @@ Our setup ensures compatible versions of key packages:
 ## 📦 Model Information
 
 The project uses two models:
-- **CSM-1B**: Available at [drbaph/CSM-1B](https://huggingface.co/drbaph/CSM-1B/tree/main)
+- **CSM-1B**: Non-gated SAFETENSORS file Available at [drbaph/CSM-1B](https://huggingface.co/drbaph/CSM-1B/tree/main)
 - **Llama-3.2-1B**: Non-gated version available at [unsloth/Llama-3.2-1B](https://huggingface.co/unsloth/Llama-3.2-1B/tree/main)
 
 Models are stored in specific directories:
-- Windows: `models/csm/model.safetensors` and `models/llama/*`
+- Windows: `models/model.safetensors` and `models/llama/*`
 - WSL: Same structure, but will default to the original model paths if not found locally
 
 ## ⚙️ Installation
@@ -125,7 +125,7 @@ This fork is designed to let you use both environments without conflicts:
 ```
 CSM-WebUI/
 ├── models/
-│   ├── csm/              # CSM model files
+│   ├── csm/              # CSM model files (where setup scripts save model)
 │   │   └── model.safetensors
 │   └── llama/            # Llama model files
 │       ├── model.safetensors
@@ -137,7 +137,7 @@ CSM-WebUI/
 ├── generator.py          # Original generator for WSL
 ├── win_generator.py      # Windows-specific generator
 ├── gradio.py             # Original UI (for WSL)
-├── win-gradio.py         # Windows-specific UI
+├── win-gradio.py         # Windows-specific UI (default model path is "models/model.safetensors")
 ├── wsl-setup.sh          # Setup script for WSL/Linux
 ├── win-setup.bat         # Setup script for Windows
 ├── run_gradio.bat        # Run script for Windows (standard)
