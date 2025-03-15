@@ -1,6 +1,6 @@
 # CSM-WebUI
 
-This is a fork of the original CSM project that creates a complete Gradio-based web interface, making CSM accessible through an intuitive UI. The fork adds Windows and WSL compatibility and various usability improvements to make speech generation easy and accessible.
+a fork of the original CSM project that creates a complete Gradio-based web interface, making CSM accessible through an intuitive UI. The fork adds Windows and WSL compatibility and various usability improvements to make speech generation easy and accessible.
 
 ## 🚀 Key Enhancements
 
@@ -24,11 +24,10 @@ The original project had issues loading the models because:
 3. The tokenizer wasn't configured to use local files
 
 Our solution:
-- Use the non-gated [unsloth/Llama-3.2-1B](https://huggingface.co/unsloth/Llama-3.2-1B) version
+- Use the non-gated [drbaph/CSM-1B](https://huggingface.co/drbaph/CSM-1B) version
 - Create a Windows-specific generator with proper path handling
-- Add `local_files_only=True` parameter to prevent download attempts
 - Provide multiple fallback methods for model loading
-- Create a standalone fix tool that can be run anytime
+- Create robust setup scripts for different environments
 
 ### Package Compatibility
 
@@ -38,6 +37,9 @@ Our setup ensures compatible versions of key packages:
   - triton-windows instead of triton
   - numpy==1.26.4
   - scipy==1.11.4
+  - Flask==2.2.5
+  - librosa==0.10.0
+  - SoundFile==0.12.1
   - torch with CUDA 11.8 support
 
 - **WSL/Linux**:
@@ -46,12 +48,11 @@ Our setup ensures compatible versions of key packages:
 
 ## 📦 Model Information
 
-The project uses two models:
-- **CSM-1B**: Non-gated SAFETENSORS file Available at [drbaph/CSM-1B](https://huggingface.co/drbaph/CSM-1B/tree/main)
-- **Llama-3.2-1B**: Non-gated version available at [unsloth/Llama-3.2-1B](https://huggingface.co/unsloth/Llama-3.2-1B/tree/main)
+The project uses the CSM-1B .safeteonsors model:
+- **CSM-1B**: Available at [drbaph/CSM-1B](https://huggingface.co/drbaph/CSM-1B/tree/main)
 
 Models are stored in specific directories:
-- Windows: `models/model.safetensors` and `models/llama/*`
+- Windows: `models/model.safetensors`
 - WSL: Same structure, but will default to the original model paths if not found locally
 
 ## ⚙️ Installation
@@ -60,16 +61,14 @@ Models are stored in specific directories:
 
 ```batch
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/CSM-WebUI.git
+git clone https://github.com/Saganaki22/CSM-WebUI.git
 cd CSM-WebUI
 
 # Run the Windows setup script
 win-setup.bat
 
 # After setup completes, run the application with:
-run_win_gradio.bat  # Uses Windows-specific generator
-# OR
-run_gradio.bat      # Uses standard generator
+run_gradio.bat
 ```
 
 ### WSL/Linux Installation
@@ -83,7 +82,7 @@ cd CSM-WebUI
 bash wsl-setup.sh
 
 # After setup completes, run the application
-python gradio.py
+python wsl-gradio.py
 ```
 
 ## 🔧 Troubleshooting
@@ -92,18 +91,9 @@ python gradio.py
 
 If you encounter model loading errors on Windows:
 
-```batch
-# Run the fix tool
-python fix_win_model.py
-
-# Then run the Windows-specific batch file
-run_win_gradio.bat
-```
-
-The fix tool will:
-1. Create a Windows-specific generator file (win_generator.py)
-2. Modify it to use local model files
-3. Create a specialized batch file to run with this generator
+1. Make sure you've downloaded the model file from Hugging Face
+2. Verify that the model is in the correct location: `models/model.safetensors`
+3. Run the Windows-specific batch file: `run_gradio.bat`
 
 ### WSL/Linux Model Loading Issues
 
@@ -111,49 +101,37 @@ If you encounter model loading errors on WSL/Linux:
 
 ```bash
 # Make sure you're using the correct paths
-python gradio.py --model-path models/csm/model.safetensors
+python wsl-gradio.py --model-path models/model.safetensors
 ```
 
 ## 🔄 Switching Between Windows and WSL
 
 This fork is designed to let you use both environments without conflicts:
-- Windows will use the triton-windows package and a Windows-specific generator file
-- WSL will use the standard triton package and the original generator file
+- Windows will use the triton-windows package and the win-gradio.py file
+- WSL will use the standard triton package and the wsl-gradio.py file
 
 ## 🗂️ Directory Structure
 
 ```
 CSM-WebUI/
 ├── models/
-│   ├── csm/              # CSM model files (where setup scripts save model)
-│   │   └── model.safetensors
-│   └── llama/            # Llama model files
-│       ├── model.safetensors
-│       ├── config.json
-│       ├── generation_config.json
-│       ├── special_tokens_map.json
-│       ├── tokenizer.json
-│       └── tokenizer_config.json
-├── generator.py          # Original generator for WSL
-├── win_generator.py      # Windows-specific generator
-├── gradio.py             # Original UI (for WSL)
-├── win-gradio.py         # Windows-specific UI (default model path is "models/model.safetensors")
-├── wsl-setup.sh          # Setup script for WSL/Linux
-├── win-setup.bat         # Setup script for Windows
-├── run_gradio.bat        # Run script for Windows (standard)
-├── run_win_gradio.bat    # Run script for Windows (with win_generator)
-└── fix_win_model.py      # Utility to fix model loading issues
+│   └── model.safetensors   # CSM model file (where setup scripts save model)
+├── generator.py            # Generator for speech synthesis
+├── wsl-gradio.py           # Gradio UI for WSL/Linux
+├── win-gradio.py           # Windows-specific Gradio UI
+├── wsl-setup.sh            # Setup script for WSL/Linux
+├── win-setup.bat           # Setup script for Windows
+└── run_gradio.bat          # Run script for Windows
 ```
 
 ## 💡 Key Differences from Original
 
-1. **Model Storage**: Original required manual downloads, our version automates this
-2. **File Format**: Changed from .ckpt to .safetensors for better security and compatibility 
-3. **Windows Support**: Added comprehensive Windows support with separate generator file
+1. **Model Storage**: Original required manual downloads, our version simplifies this
+2. **File Format**: Using .safetensors for better security and compatibility 
+3. **Windows Support**: Added comprehensive Windows support with separate setup script
 4. **Dual Environments**: Support for both Windows and WSL without conflicts
 5. **Robust Error Handling**: Multiple fallback methods for model loading
 6. **Streamlined UI**: Unified interface across platforms
-7. **Non-Gated Models**: Using alternative sources to avoid authentication issues
 
 ---
 
