@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Tuple
+import os
 
 import torch
 import torchaudio
@@ -172,7 +173,17 @@ def load_csm_1b(ckpt_path: str = "ckpt.pt", device: str = "cuda") -> Generator:
         audio_num_codebooks=32,
     )
     model = Model(model_args).to(device=device, dtype=torch.bfloat16)
-    state_dict = torch.load(ckpt_path)
+    
+    # Modified code to handle safetensors files
+    if ckpt_path.endswith('.safetensors'):
+        try:
+            from safetensors.torch import load_file
+            state_dict = load_file(ckpt_path, device=device)
+        except ImportError:
+            raise ImportError("safetensors is required to load .safetensors files. Please install it with 'pip install safetensors'")
+    else:
+        state_dict = torch.load(ckpt_path)
+    
     model.load_state_dict(state_dict)
 
     generator = Generator(model)
