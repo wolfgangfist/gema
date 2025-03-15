@@ -2,6 +2,21 @@
 
 This is a fork of the original CSM project that creates a complete Gradio-based web interface, making CSM accessible through an intuitive UI. The fork adds Windows and WSL compatibility and various usability improvements to make speech generation easy and accessible.
 
+![image](https://github.com/user-attachments/assets/ca23144b-54ba-4877-88e9-25d2fe18d597)
+
+
+
+https://github.com/user-attachments/assets/86d08077-e0c4-4b84-8ce6-912f969e12c6
+
+
+
+
+https://github.com/user-attachments/assets/68e7ce21-c101-432b-a871-c4892542eb8b
+
+
+
+
+
 ## 🚀 Key Enhancements
 
 - **Windows Compatibility**: Full support for Windows with triton-windows package
