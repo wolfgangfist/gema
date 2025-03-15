@@ -1,6 +1,6 @@
 # CSM-WebUI
 
-a fork of the original CSM project that creates a complete Gradio-based web interface, making CSM accessible through an intuitive UI. The fork adds Windows and WSL compatibility and various usability improvements to make speech generation easy and accessible.
+This is a fork of the original CSM project that creates a complete Gradio-based web interface, making CSM accessible through an intuitive UI. The fork adds Windows and WSL compatibility and various usability improvements to make speech generation easy and accessible.
 
 ## 🚀 Key Enhancements
 
@@ -114,14 +114,19 @@ This fork is designed to let you use both environments without conflicts:
 
 ```
 CSM-WebUI/
-├── models/
-│   └── model.safetensors   # CSM model file (where setup scripts save model)
-├── generator.py            # Generator for speech synthesis
-├── wsl-gradio.py           # Gradio UI for WSL/Linux
-├── win-gradio.py           # Windows-specific Gradio UI
-├── wsl-setup.sh            # Setup script for WSL/Linux
-├── win-setup.bat           # Setup script for Windows
-└── run_gradio.bat          # Run script for Windows
+├── models/                   # Directory for model files
+│   └── model.safetensors     # CSM model file (where setup scripts save model)
+├── sounds/                   # Directory for example audio files
+│   ├── man.mp3               # Male voice example
+│   └── woman.mp3             # Female voice example
+├── generator.py              # Generator for speech synthesis
+├── watermarking.py           # Audio watermarking functionality
+├── wsl-gradio.py             # Gradio UI for WSL/Linux
+├── win-gradio.py             # Windows-specific Gradio UI
+├── wsl-setup.sh              # Setup script for WSL/Linux
+├── win-setup.bat             # Setup script for Windows
+├── run_gradio.bat            # Run script for Windows
+└── requirements.txt          # Python package requirements
 ```
 
 ## 💡 Key Differences from Original
