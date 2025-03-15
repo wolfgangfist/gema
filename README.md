@@ -96,6 +96,8 @@ run_fixed.bat
    - Sets up PyTorch with CUDA 12.4 support
    - Creates virtual environment and installs required packages
    - Optionally downloads the model file
+   - **IMPORTANT**: If the script just git pulls and stops without installing dependencies, close it and run it once more
+   - **IMPORTANT**: If you encounter a .venv issue, delete the .venv folder and run verbose-win-setup.bat again - this should fix the issue
 
 2. **Run fix-torch-compile.bat**
    - Patches the Moshi library to fix PyTorch compilation errors
@@ -124,15 +126,23 @@ python wsl-gradio.py
 
 ### Windows Common Issues
 
-1. **PyTorch Compilation Errors**
+1. **Setup Script Stopping After Git Pull**
+   - If verbose-win-setup.bat only performs a git pull and stops without installing dependencies, simply close the script and run it again
+   - This is a known issue that can occur on the first run
+
+2. **Virtual Environment (.venv) Issues**
+   - If you encounter errors related to the .venv folder, delete the entire .venv folder and run verbose-win-setup.bat again
+   - This completely recreates the virtual environment and resolves most initialization issues
+
+3. **PyTorch Compilation Errors**
    - If you encounter "dataclass errors" or "must be called with a dataclass type or instance" errors, make sure you've run the fix-torch-compile.bat script
    - This error occurs with PyTorch 2.4.0's compilation system on Windows
 
-2. **Missing bitsandbytes Error**
+4. **Missing bitsandbytes Error**
    - If you see "No module named 'bitsandbytes'" error, run verbose-win-setup.bat again which installs this package
    - Alternatively, manually install it: `pip install bitsandbytes-windows`
 
-3. **CUDA Not Available**
+5. **CUDA Not Available**
    - If PyTorch doesn't detect your CUDA GPU, verify your NVIDIA drivers are up to date
    - Check with `python -c "import torch; print(torch.cuda.is_available())"`
 
