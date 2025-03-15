@@ -71,9 +71,37 @@ REM Completely uninstall any existing PyTorch installations
 pip uninstall -y torch torchvision torchaudio
 echo Uninstalled any existing PyTorch installations.
 
-REM Install latest PyTorch with CUDA 11.8 support - this specific version is important
-echo Installing PyTorch 2.0.1 with CUDA 11.8 support...
-pip install torch==2.0.1 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+REM Check for Visual C++ Redistributable
+echo Checking for required Visual C++ Redistributable...
+REM This command checks if the Visual C++ 2019 Redistributable is installed
+reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" /v Version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Visual C++ Redistributable might be missing, which is required for PyTorch.
+    echo Please download and install the Visual C++ Redistributable from:
+    echo https://aka.ms/vs/17/release/vc_redist.x64.exe
+    echo.
+    set /p install_vcredist="Would you like to download it now? [Y/n]: "
+    if /I "!install_vcredist!"=="Y" (
+        echo Downloading Visual C++ Redistributable...
+        powershell -Command "& {Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile 'vc_redist.x64.exe'}"
+        echo Installing Visual C++ Redistributable...
+        start /wait vc_redist.x64.exe /quiet /norestart
+        echo Visual C++ Redistributable installation complete.
+    ) else if "!install_vcredist!"=="" (
+        echo Downloading Visual C++ Redistributable...
+        powershell -Command "& {Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile 'vc_redist.x64.exe'}"
+        echo Installing Visual C++ Redistributable...
+        start /wait vc_redist.x64.exe /quiet /norestart
+        echo Visual C++ Redistributable installation complete.
+    ) else (
+        echo Skipping Visual C++ Redistributable installation. This might cause issues with PyTorch.
+    )
+)
+
+REM Install PyTorch with CUDA 12.4 support
+echo.
+echo Installing PyTorch with CUDA 12.4 support...
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 REM Verify CUDA support with multiple checks
 echo.
@@ -81,6 +109,7 @@ echo Verifying PyTorch CUDA support...
 python -c "import torch; print(f'PyTorch {torch.__version__} installed with CUDA: {torch.cuda.is_available()}')"
 python -c "import torch; print(f'CUDA device count: {torch.cuda.device_count()}')"
 python -c "import torch; print(f'CUDA version: {torch.version.cuda if torch.cuda.is_available() else \"Not available\"}')"
+python -c "import torchaudio; print(f'torchaudio {torchaudio.__version__} installed')"
 
 REM Exit with warning if CUDA is not available
 python -c "import torch; torch.cuda.is_available() or exit(1)" >nul 2>&1
