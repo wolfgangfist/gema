@@ -1,5 +1,6 @@
 # CSM
 
+**2025/03/15** - I am releasing support for CPU for non-CUDA device. I am relasing a Gradio UI as well.
 **2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on HuggingFace](https://huggingface.co/sesame/csm_1b).
 
 ---
@@ -12,7 +13,7 @@ A hosted [HuggingFace space](https://huggingface.co/spaces/sesame/csm-1b) is als
 
 ## Requirements
 
-* A CUDA-compatible GPU (runs on CPU otherwise)
+* A CUDA-compatible GPU
 * The code has been tested on CUDA 12.4 and 12.6, but it may also work on other versions
 * Similarly, Python 3.10 is recommended, but newer versions may be fine
 * For some audio operations, `ffmpeg` may be required
@@ -59,20 +60,30 @@ mkdir -p prompts
 https://huggingface.co/spaces/sesame/csm-1b/tree/main/prompts
 ```
 
-### Quick Start
+### Interactive Web Interface
 
-Run the model using the command line interface:
+Run the Gradio web interface for an interactive experience:
 
 ```bash
 # Option 1: Set environment variable when running
-NO_TORCH_COMPILE=1 python run_csm.py
+NO_TORCH_COMPILE=1 python run_csm_gradio.py
 
 # Option 2: Run normally (environment variable is set in the script)
-python run_csm.py
+python run_csm_gradio.py
 ```
 
-The script will automatically use CUDA if available for faster generation,
+This will launch a web interface where you can:
+- Choose or customize voice prompts for both speakers
+- Upload or record your own voice prompts
+- Enter a conversation with alternating lines between speakers
+- Generate and play the conversation audio directly in the browser
+
+The interface will automatically use CUDA if available for faster generation,
 otherwise it will fall back to CPU mode.
+
+## UI Screenshots:
+![Gradio UI](assets/gradio-demo.jpg)
+![Voice Clone](assets/speaker-voice.jpeg)
 
 ### Python API
 

@@ -3,8 +3,11 @@ torchaudio>=2.0.0
 tokenizers==0.21.0
 transformers
 huggingface_hub
+moshi==0.2.2
+torchtune==0.4.0
+torchao==0.9.0
 silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
 bitsandbytes>=0.41.1
 ffmpeg-python
 soundfile
-triton-cpu>=2.0.0
+gradio>=4.0.0
