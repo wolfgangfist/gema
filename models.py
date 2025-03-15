@@ -1,10 +1,11 @@
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torchtune
 from huggingface_hub import PyTorchModelHubMixin
 from torchtune.models import llama3_2
+
 
 def llama3_2_1B() -> torchtune.modules.transformer.TransformerDecoder:
     return llama3_2.llama3_2(
