@@ -101,27 +101,20 @@ class Model(
     repo_url="https://github.com/SesameAILabs/csm",
     pipeline_tag="text-to-speech",
     license="apache-2.0",
-    coders={
-      # Tells the class how to serialize and deserialize config.json
-      ModelArgs : (
-         lambda x: asdict(x),  # Encoder: how to convert a `ModelArgs` to a valid jsonable value?
-         lambda data: ModelArgs(**data),  # Decoder: how to reconstruct a `ModelArgs` from a dictionary?
-      )
-   }
 ):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, config: ModelArgs):
         super().__init__()
-        self.args = args
+        self.config = config
 
-        self.backbone, backbone_dim = _prepare_transformer(FLAVORS[args.backbone_flavor]())
-        self.decoder, decoder_dim = _prepare_transformer(FLAVORS[args.decoder_flavor]())
+        self.backbone, backbone_dim = _prepare_transformer(FLAVORS[config.backbone_flavor]())
+        self.decoder, decoder_dim = _prepare_transformer(FLAVORS[config.decoder_flavor]())
 
-        self.text_embeddings = nn.Embedding(args.text_vocab_size, backbone_dim)
-        self.audio_embeddings = nn.Embedding(args.audio_vocab_size * args.audio_num_codebooks, backbone_dim)
+        self.text_embeddings = nn.Embedding(config.text_vocab_size, backbone_dim)
+        self.audio_embeddings = nn.Embedding(config.audio_vocab_size * config.audio_num_codebooks, backbone_dim)
 
         self.projection = nn.Linear(backbone_dim, decoder_dim, bias=False)
-        self.codebook0_head = nn.Linear(backbone_dim, args.audio_vocab_size, bias=False)
-        self.audio_head = nn.Parameter(torch.empty(args.audio_num_codebooks - 1, decoder_dim, args.audio_vocab_size))
+        self.codebook0_head = nn.Linear(backbone_dim, config.audio_vocab_size, bias=False)
+        self.audio_head = nn.Parameter(torch.empty(config.audio_num_codebooks - 1, decoder_dim, config.audio_vocab_size))
 
     def setup_caches(self, max_batch_size: int) -> torch.Tensor:
         """Setup KV caches and return a causal mask."""
@@ -130,10 +123,10 @@ class Model(
 
         with device:
             self.backbone.setup_caches(max_batch_size, dtype)
-            self.decoder.setup_caches(max_batch_size, dtype, decoder_max_seq_len=self.args.audio_num_codebooks)
+            self.decoder.setup_caches(max_batch_size, dtype, decoder_max_seq_len=self.config.audio_num_codebooks)
 
         self.register_buffer("backbone_causal_mask", _create_causal_mask(self.backbone.max_seq_len, device))
-        self.register_buffer("decoder_causal_mask", _create_causal_mask(self.args.audio_num_codebooks, device))
+        self.register_buffer("decoder_causal_mask", _create_causal_mask(self.config.audio_num_codebooks, device))
 
     def generate_frame(
         self,
@@ -174,7 +167,7 @@ class Model(
 
         # Decoder caches must be reset every frame.
         self.decoder.reset_caches()
-        for i in range(1, self.args.audio_num_codebooks):
+        for i in range(1, self.config.audio_num_codebooks):
             curr_decoder_mask = _index_causal_mask(self.decoder_causal_mask, curr_pos)
             decoder_h = self.decoder(self.projection(curr_h), input_pos=curr_pos, mask=curr_decoder_mask).to(
                 dtype=dtype
@@ -194,16 +187,16 @@ class Model(
         self.decoder.reset_caches()
 
     def _embed_audio(self, codebook: int, tokens: torch.Tensor) -> torch.Tensor:
-        return self.audio_embeddings(tokens + codebook * self.args.audio_vocab_size)
+        return self.audio_embeddings(tokens + codebook * self.config.audio_vocab_size)
 
     def _embed_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         text_embeds = self.text_embeddings(tokens[:, :, -1]).unsqueeze(-2)
 
         audio_tokens = tokens[:, :, :-1] + (
-            self.args.audio_vocab_size * torch.arange(self.args.audio_num_codebooks, device=tokens.device)
+            self.config.audio_vocab_size * torch.arange(self.config.audio_num_codebooks, device=tokens.device)
         )
         audio_embeds = self.audio_embeddings(audio_tokens.view(-1)).reshape(
-            tokens.size(0), tokens.size(1), self.args.audio_num_codebooks, -1
+            tokens.size(0), tokens.size(1), self.config.audio_num_codebooks, -1
         )
 
         return torch.cat([audio_embeds, text_embeds], dim=-2)
