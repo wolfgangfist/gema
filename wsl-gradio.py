@@ -424,7 +424,7 @@ with gr.Blocks(title="CSM-WebUI") as app:
         model_status = gr.Textbox(label="Model Status", interactive=False)
     
     gr.Markdown("""
-    **Note:** Make sure you request access to the model on [Hugging Face](https://huggingface.co/sesame/csm-1b) first or you won't be able to download it.
+    **Note:** Make sure you DL the model from [Hugging Face](https://huggingface.co/sesame/csm-1b) first.
     """)
     
     load_button.click(load_model, inputs=[model_path], outputs=[model_status])
