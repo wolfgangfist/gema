@@ -55,7 +55,7 @@ Our setup ensures compatible versions of key packages:
   - Flask==2.2.5
   - librosa==0.10.0
   - SoundFile==0.12.1
-  - torch with CUDA 11.8 support
+  - PyTorch 2.4.0 with CUDA 12.4 support
 
 - **WSL/Linux**:
   - Standard triton package
@@ -79,12 +79,32 @@ Models are stored in specific directories:
 git clone https://github.com/Saganaki22/CSM-WebUI.git
 cd CSM-WebUI
 
-# Run the Windows setup script
-win-setup.bat
+# Step 1: Run the improved Windows setup script
+verbose-win-setup.bat
 
-# After setup completes, run the application with:
-run_gradio.bat
+# Step 2: Fix PyTorch compilation issues
+fix-torch-compile.bat
+
+# Step 3: Run the application using the generated script
+run_fixed.bat
 ```
+
+#### Detailed Windows Installation Steps:
+
+1. **Run verbose-win-setup.bat**
+   - Installs all dependencies with detailed output
+   - Sets up PyTorch with CUDA 12.4 support
+   - Creates virtual environment and installs required packages
+   - Optionally downloads the model file
+
+2. **Run fix-torch-compile.bat**
+   - Patches the Moshi library to fix PyTorch compilation errors
+   - Creates the run_fixed.bat launcher
+   - Makes a backup of the original file in case you need to restore it
+
+3. **Use run_fixed.bat to launch the application**
+   - This script is automatically created by fix-torch-compile.bat
+   - Properly activates the virtual environment and launches the application
 
 ### WSL/Linux Installation
 
@@ -102,13 +122,19 @@ python wsl-gradio.py
 
 ## 🔧 Troubleshooting
 
-### Windows Model Loading Issues
+### Windows Common Issues
 
-If you encounter model loading errors on Windows:
+1. **PyTorch Compilation Errors**
+   - If you encounter "dataclass errors" or "must be called with a dataclass type or instance" errors, make sure you've run the fix-torch-compile.bat script
+   - This error occurs with PyTorch 2.4.0's compilation system on Windows
 
-1. Make sure you've downloaded the model file from Hugging Face
-2. Verify that the model is in the correct location: `models/model.safetensors`
-3. Run the Windows-specific batch file: `run_gradio.bat`
+2. **Missing bitsandbytes Error**
+   - If you see "No module named 'bitsandbytes'" error, run verbose-win-setup.bat again which installs this package
+   - Alternatively, manually install it: `pip install bitsandbytes-windows`
+
+3. **CUDA Not Available**
+   - If PyTorch doesn't detect your CUDA GPU, verify your NVIDIA drivers are up to date
+   - Check with `python -c "import torch; print(torch.cuda.is_available())"`
 
 ### WSL/Linux Model Loading Issues
 
@@ -138,9 +164,9 @@ CSM-WebUI/
 ├── watermarking.py           # Audio watermarking functionality
 ├── wsl-gradio.py             # Gradio UI for WSL/Linux
 ├── win-gradio.py             # Windows-specific Gradio UI
+├── verbose-win-setup.bat     # Improved setup script for Windows with verbose output
+├── fix-torch-compile.bat     # Script to fix PyTorch compilation issues
 ├── wsl-setup.sh              # Setup script for WSL/Linux
-├── win-setup.bat             # Setup script for Windows
-├── run_gradio.bat            # Run script for Windows
 └── requirements.txt          # Python package requirements
 ```
 
@@ -152,6 +178,7 @@ CSM-WebUI/
 4. **Dual Environments**: Support for both Windows and WSL without conflicts
 5. **Robust Error Handling**: Multiple fallback methods for model loading
 6. **Streamlined UI**: Unified interface across platforms
+7. **PyTorch Compatibility**: Fixes for Windows-specific PyTorch compilation issues
 
 ---
 
