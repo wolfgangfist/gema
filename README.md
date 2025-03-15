@@ -50,7 +50,7 @@ elif torch.cuda.is_available():
 else:
     device = "cpu"
 
-generator = load_csm_1b(device="cuda")
+generator = load_csm_1b(device=device)
 
 audio = generator.generate(
     text="Hello from Sesame.",
