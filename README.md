@@ -70,6 +70,17 @@ Models are stored in specific directories:
 - Windows: `models/model.safetensors`
 - WSL: Same structure, but will default to the original model paths if not found locally
 
+### HuggingFace Authentication Requirements
+
+**IMPORTANT:** Before installation, you need to:
+
+1. Create a HuggingFace account at [huggingface.co](https://huggingface.co)
+2. Visit [meta-llama/Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B) and request access to the model
+3. Create a HuggingFace access token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+4. During the installation process, you will be prompted to authenticate with your HuggingFace token - paste the token when prompted
+
+Without access to the Llama model and proper authentication, the program will not work as it uses the Llama backbone.
+
 ## ⚙️ Installation
 
 ### Windows Installation
@@ -126,7 +137,12 @@ python wsl-gradio.py
 
 ### Windows Common Issues
 
-1. **Setup Script Stopping After Git Pull**
+1. **HuggingFace Authentication Issues**
+   - Make sure you have a HuggingFace account and have requested access to [meta-llama/Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B)
+   - Create an access token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) before running the setup
+   - When prompted during installation, paste your HuggingFace token for authentication
+
+2. **Setup Script Stopping After Git Pull**
    - If verbose-win-setup.bat only performs a git pull and stops without installing dependencies, simply close the script and run it again
    - This is a known issue that can occur on the first run
 
