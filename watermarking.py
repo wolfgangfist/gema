@@ -21,6 +21,7 @@ def load_watermarker(device: str = "cuda") -> silentcipher.server.Model:
     model = silentcipher.get_model(
         model_type="44.1k",
         device=device,
+
     )
     return model
 

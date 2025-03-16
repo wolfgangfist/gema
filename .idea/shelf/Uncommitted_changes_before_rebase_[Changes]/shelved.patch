@@ -1,0 +1,19 @@
+Index: .idea/runConfigurations/_template__of_Application.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/.idea/runConfigurations/_template__of_Application.xml b/.idea/runConfigurations/_template__of_Application.xml
+new file mode 100644
+--- /dev/null	(date 1742145522381)
++++ b/.idea/runConfigurations/_template__of_Application.xml	(date 1742145522381)
+@@ -0,0 +1,8 @@
++<component name="ProjectRunConfigurationManager">
++  <configuration default="true" type="Application" factoryName="Application">
++    <module name="csm" />
++    <method v="2">
++      <option name="Make" enabled="true" />
++    </method>
++  </configuration>
++</component>
+\ No newline at end of file

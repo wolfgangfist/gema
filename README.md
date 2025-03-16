@@ -22,6 +22,7 @@ A hosted [Hugging Face space](https://huggingface.co/spaces/sesame/csm-1b) is al
 
 ### Setup
 
+
 ```bash
 git clone git@github.com:SesameAILabs/csm.git
 cd csm
