@@ -58,10 +58,7 @@ huggingface-cli login
 Run the model using the command line interface:
 
 ```bash
-# Option 1: Set environment variable when running
-NO_TORCH_COMPILE=1 python run_csm.py
-
-# Option 2: Run normally (environment variable is set in the script)
+# Run normally (environment variable is set in the script)
 python run_csm.py
 ```
 
@@ -70,6 +67,7 @@ otherwise it will fall back to CPU mode.
 
 python run_csm.py
 from huggingface_hub import hf_hub_download
+=======
 from generator import load_csm_1b
 import torchaudio
 import torch
@@ -79,6 +77,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
 generator = load_csm_1b(model_path, device)
+
+if torch.backends.mps.is_available():
+    device = "mps"
+elif torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+
+generator = load_csm_1b(device=device)
+
 audio = generator.generate(
     text="Hello from Sesame.",
     speaker=0,
