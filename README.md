@@ -18,7 +18,8 @@ A hosted [Hugging Face space](https://huggingface.co/spaces/sesame/csm-1b) is al
 * For some audio operations, `ffmpeg` may be required
 * Access to the following Hugging Face models:
   * [Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B)
-  * 
+* 
+* 
   * [CSM-1B](https://huggingface.co/sesame/csm-1b)
 
 ### Setup
