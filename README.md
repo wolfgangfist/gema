@@ -34,7 +34,6 @@ source .venv/bin/activate
 export NO_TORCH_COMPILE=1
 
 pip install -r requirements.txt
-```
 
 Install ffmpeg (required for audio processing):
 
@@ -49,15 +48,6 @@ sudo apt-get install ffmpeg
 # Download from https://ffmpeg.org/download.html
 ```
 
-Download the required prompt audio files:
-
-```bash
-# Create prompts directory
-mkdir -p prompts
-
-# Download prompt files and place them in the prompts directory
-https://huggingface.co/spaces/sesame/csm-1b/tree/main/prompts
-```
 
 ### Quick Start
 
@@ -74,11 +64,7 @@ python run_csm.py
 The script will automatically use CUDA if available for faster generation,
 otherwise it will fall back to CPU mode.
 
-### Python API
-
-Generate a single utterance:
-
-```python
+python run_csm.py
 from huggingface_hub import hf_hub_download
 from generator import load_csm_1b
 import torchaudio

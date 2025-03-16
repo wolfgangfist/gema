@@ -19,6 +19,7 @@ SPEAKER_PROMPTS = {
             "sort of start the day with this not like a panic but like a"
         ),
         "audio": "prompts/conversational_a.wav",
+        "hf_path": "spaces/sesame/csm-1b/prompts/conversational_a.wav"
     },
     "conversational_b": {
         "text": (
@@ -30,8 +31,28 @@ SPEAKER_PROMPTS = {
             "bracelet and then you can go punching question blocks around."
         ),
         "audio": "prompts/conversational_b.wav",
+        "hf_path": "spaces/sesame/csm-1b/prompts/conversational_b.wav"
     }
 }
+
+def ensure_prompts_downloaded():
+    """Download prompt files if they don't exist locally"""
+    os.makedirs("prompts", exist_ok=True)
+
+    for prompt_info in SPEAKER_PROMPTS.values():
+        local_path = prompt_info["audio"]
+        if not os.path.exists(local_path):
+            try:
+                hf_hub_download(
+                    repo_id="sesame/csm-1b",
+                    filename=prompt_info["hf_path"].split("/")[-1],
+                    repo_type="space",
+                    local_dir="prompts"
+                )
+                print(f"Downloaded {local_path}")
+            except Exception as e:
+                print(f"Error downloading {local_path}: {str(e)}")
+                raise
 
 def load_prompt_audio(audio_path: str, target_sample_rate: int) -> torch.Tensor:
     audio_tensor, sample_rate = torchaudio.load(audio_path)
@@ -47,6 +68,9 @@ def prepare_prompt(text: str, speaker: int, audio_path: str, sample_rate: int) -
     return Segment(text=text, speaker=speaker, audio=audio_tensor)
 
 def main():
+    # Download prompts if needed
+    ensure_prompts_downloaded()
+
     # Select the best available device, skipping MPS due to float64 limitations
     if torch.cuda.is_available():
         device = "cuda"
@@ -98,12 +122,7 @@ def main():
             
             # Save individual utterance
             filename = f"output_{len(generated_segments)}.wav"
-            torchaudio.save(
-                filename, 
-                audio_tensor.unsqueeze(0).cpu(), 
-                generator.sample_rate
-            )
-            print(f"Saved {filename}")
+
         
         # Concatenate all generations
         all_audio = torch.cat([seg.audio for seg in generated_segments], dim=0)
