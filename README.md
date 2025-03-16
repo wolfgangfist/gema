@@ -46,6 +46,10 @@ sudo apt-get install ffmpeg
 
 # On Windows
 # Download from https://ffmpeg.org/download.html
+
+# You will need access to CSM-1B and Llama-3.2-1B
+huggingface-cli login
+
 ```
 
 
