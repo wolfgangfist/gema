@@ -80,8 +80,7 @@ def main():
     
     try:
         # Load model
-        model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-        generator = load_csm_1b(model_path, device)
+        generator = load_csm_1b(device)
         
         # Prepare prompts
         prompt_a = prepare_prompt(
