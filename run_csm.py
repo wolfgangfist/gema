@@ -19,7 +19,7 @@ SPEAKER_PROMPTS = {
             "sort of start the day with this not like a panic but like a"
         ),
         "audio": "prompts/conversational_a.wav",
-        "hf_path": "spaces/sesame/csm-1b/prompts/conversational_a.wav"
+        "hf_path": "prompts/conversational_a.wav"
     },
     "conversational_b": {
         "text": (
@@ -31,7 +31,7 @@ SPEAKER_PROMPTS = {
             "bracelet and then you can go punching question blocks around."
         ),
         "audio": "prompts/conversational_b.wav",
-        "hf_path": "spaces/sesame/csm-1b/prompts/conversational_b.wav"
+        "hf_path": "prompts/conversational_b.wav"
     }
 }
 
@@ -45,9 +45,9 @@ def ensure_prompts_downloaded():
             try:
                 hf_hub_download(
                     repo_id="sesame/csm-1b",
-                    filename=prompt_info["hf_path"].split("/")[-1],
-                    repo_type="space",
-                    local_dir="prompts"
+                    filename=prompt_info["hf_path"],
+                    local_dir=".",
+                    local_dir_use_symlinks=False
                 )
                 print(f"Downloaded {local_path}")
             except Exception as e:
