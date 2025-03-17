@@ -65,13 +65,6 @@ audio = generator.generate(
 torchaudio.save("audio.wav", audio.unsqueeze(0).cpu(), generator.sample_rate)
 ```
 
-If you want to play the audio on a Jupyter Notebook
-
-```python
-from IPython.display import Audio
-Audio('audio.wav', autoplay=True)
-```
-
 CSM sounds best when provided with context. You can prompt or provide context to the model using a `Segment` for each speaker's utterance.
 
 ```python
@@ -90,17 +83,6 @@ audio_paths = [
     "utterance_2.wav",
     "utterance_3.wav",
 ]
-
-# The code below is for creating the audio files from the transcripts if you don't have the files already
-for transcript, speaker, audio_path in zip(transcripts, speakers, audio_paths):
-  audio = generator.generate(
-      text=transcript,
-      speaker=speaker,
-      context=[],
-      max_audio_length_ms=10_000,
-  )
-  torchaudio.save(audio_path, audio.unsqueeze(0).cpu(), generator.sample_rate)
-
 
 def load_audio(audio_path):
     audio_tensor, sample_rate = torchaudio.load(audio_path)
