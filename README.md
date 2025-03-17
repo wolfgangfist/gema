@@ -28,6 +28,9 @@ cd csm
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# You will need access to CSM-1B and Llama-3.2-1B
+huggingface-cli login
 ```
 
 ### Windows Setup
@@ -39,7 +42,6 @@ The `triton` package cannot be installed in Windows. Instead use `pip install tr
 Generate a sentence
 
 ```python
-from huggingface_hub import hf_hub_download
 from generator import load_csm_1b
 import torchaudio
 import torch
@@ -50,8 +52,9 @@ elif torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
-model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-generator = load_csm_1b(model_path, device)
+
+generator = load_csm_1b(device=device)
+
 audio = generator.generate(
     text="Hello from Sesame.",
     speaker=0,
