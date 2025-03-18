@@ -1,6 +1,6 @@
 # CSM
 
-**2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on HuggingFace](https://huggingface.co/sesame/csm_1b).
+**2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on Hugging Face](https://huggingface.co/sesame/csm_1b).
 
 ---
 
@@ -8,11 +8,11 @@ CSM (Conversational Speech Model) is a speech generation model from [Sesame](htt
 
 A fine-tuned variant of CSM powers the [interactive voice demo](https://www.sesame.com/voicedemo) shown in our [blog post](https://www.sesame.com/research/crossing_the_uncanny_valley_of_voice).
 
-A hosted [HuggingFace space](https://huggingface.co/spaces/sesame/csm-1b) is also available for testing audio generation.
+A hosted [Hugging Face space](https://huggingface.co/spaces/sesame/csm-1b) is also available for testing audio generation.
 
 ## Requirements
 
-* A CUDA-compatible GPU (runs on CPU otherwise)
+* A CUDA-compatible GPU
 * The code has been tested on CUDA 12.4 and 12.6, but it may also work on other versions
 * Similarly, Python 3.10 is recommended, but newer versions may be fine
 * For some audio operations, `ffmpeg` may be required
@@ -22,61 +22,35 @@ A hosted [HuggingFace space](https://huggingface.co/spaces/sesame/csm-1b) is als
 
 ### Setup
 
-Clone and setup the repo:
-
 ```bash
 git clone git@github.com:SesameAILabs/csm.git
 cd csm
 python3.10 -m venv .venv
 source .venv/bin/activate
-
-# Set environment variable to disable Triton compilation
-export NO_TORCH_COMPILE=1
-
 pip install -r requirements.txt
-
-Install ffmpeg (required for audio processing):
-
-```bash
-# On macOS with Homebrew
-brew install ffmpeg
-
-# On Ubuntu/Debian
-sudo apt-get install ffmpeg
-
-# On Windows
-# Download from https://ffmpeg.org/download.html
 
 # You will need access to CSM-1B and Llama-3.2-1B
 huggingface-cli login
-
 ```
 
+### Windows Setup
 
-### Quick Start
+The `triton` package cannot be installed in Windows. Instead use `pip install triton-windows`.
 
-Run the model using the command line interface:
+## Usage
 
+Run the example script:
 ```bash
-# Run normally (environment variable is set in the script)
 python run_csm.py
 ```
+You can also create your own script using the example code below.
 
-The script will automatically use CUDA if available for faster generation,
-otherwise it will fall back to CPU mode.
+Generate a sentence
 
-python run_csm.py
-from huggingface_hub import hf_hub_download
-=======
+```python
 from generator import load_csm_1b
 import torchaudio
 import torch
-
-# Use CUDA if available, otherwise CPU
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-generator = load_csm_1b(model_path, device)
 
 if torch.backends.mps.is_available():
     device = "mps"

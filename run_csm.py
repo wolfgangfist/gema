@@ -18,8 +18,7 @@ SPEAKER_PROMPTS = {
             "but like yeah I'm trying to like yeah I noticed this yesterday that like Mondays I "
             "sort of start the day with this not like a panic but like a"
         ),
-        "audio": "prompts/conversational_a.wav",
-        "hf_path": "prompts/conversational_a.wav"
+        "audio": "prompts/conversational_a.wav"
     },
     "conversational_b": {
         "text": (
@@ -30,8 +29,7 @@ SPEAKER_PROMPTS = {
             "come out. So like everyone, when they come into the park, they get like this little "
             "bracelet and then you can go punching question blocks around."
         ),
-        "audio": "prompts/conversational_b.wav",
-        "hf_path": "prompts/conversational_b.wav"
+        "audio": "prompts/conversational_b.wav"
     }
 }
 
@@ -39,13 +37,13 @@ def ensure_prompts_downloaded():
     """Download prompt files if they don't exist locally"""
     os.makedirs("prompts", exist_ok=True)
 
-    for prompt_info in SPEAKER_PROMPTS.values():
+    for prompt_name, prompt_info in SPEAKER_PROMPTS.items():
         local_path = prompt_info["audio"]
         if not os.path.exists(local_path):
             try:
                 hf_hub_download(
                     repo_id="sesame/csm-1b",
-                    filename=prompt_info["hf_path"],
+                    filename=f"prompts/{prompt_name}.wav",
                     local_dir=".",
                     local_dir_use_symlinks=False
                 )
