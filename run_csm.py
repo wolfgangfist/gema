@@ -55,10 +55,10 @@ def ensure_prompts_downloaded():
 def load_prompt_audio(audio_path: str, target_sample_rate: int) -> torch.Tensor:
     audio_tensor, sample_rate = torchaudio.load(audio_path)
     audio_tensor = audio_tensor.squeeze(0)
-    if sample_rate != target_sample_rate:
-        audio_tensor = torchaudio.functional.resample(
-            audio_tensor, orig_freq=sample_rate, new_freq=target_sample_rate
-        )
+    # Resample is lazy so we can always call it
+    audio_tensor = torchaudio.functional.resample(
+        audio_tensor, orig_freq=sample_rate, new_freq=target_sample_rate
+    )
     return audio_tensor
 
 def prepare_prompt(text: str, speaker: int, audio_path: str, sample_rate: int) -> Segment:
@@ -97,30 +97,26 @@ def main():
         
         # Generate conversation
         conversation = [
-            ("Hey how are you doing?", 0),
-            ("Pretty good, pretty good. How about you?", 1),
-            ("I'm great! So happy to be speaking with you today.", 0),
-            ("Me too! This is some cool stuff, isn't it?", 1)
+            {"text": "Hey how are you doing?", "speaker_id": 0},
+            {"text": "Pretty good, pretty good. How about you?", "speaker_id": 1},
+            {"text": "I'm great! So happy to be speaking with you today.", "speaker_id": 0},
+            {"text": "Me too! This is some cool stuff, isn't it?", "speaker_id": 1}
         ]
         
         # Generate each utterance
         generated_segments = []
         prompt_segments = [prompt_a, prompt_b]
         
-        for text, speaker_id in conversation:
-            print(f"Generating: {text}")
+        for utterance in conversation:
+            print(f"Generating: {utterance['text']}")
             audio_tensor = generator.generate(
-                text=text,
-                speaker=speaker_id,
+                text=utterance['text'],
+                speaker=utterance['speaker_id'],
                 context=prompt_segments + generated_segments,
                 max_audio_length_ms=10_000,
             )
-            generated_segments.append(Segment(text=text, speaker=speaker_id, audio=audio_tensor))
-            
-            # Save individual utterance
-            filename = f"output_{len(generated_segments)}.wav"
+            generated_segments.append(Segment(text=utterance['text'], speaker=utterance['speaker_id'], audio=audio_tensor))
 
-        
         # Concatenate all generations
         all_audio = torch.cat([seg.audio for seg in generated_segments], dim=0)
         torchaudio.save(
