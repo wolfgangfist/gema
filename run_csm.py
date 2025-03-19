@@ -8,6 +8,16 @@ from dataclasses import dataclass
 # Disable Triton compilation
 os.environ["NO_TORCH_COMPILE"] = "1"
 
+# Default prompts are available at https://hf.co/sesame/csm-1b
+prompt_filepath_conversational_a = hf_hub_download(
+    repo_id="sesame/csm-1b",
+    filename="prompts/conversational_a.wav"
+)
+prompt_filepath_conversational_b = hf_hub_download(
+    repo_id="sesame/csm-1b",
+    filename="prompts/conversational_b.wav"
+)
+
 SPEAKER_PROMPTS = {
     "conversational_a": {
         "text": (
@@ -18,7 +28,7 @@ SPEAKER_PROMPTS = {
             "but like yeah I'm trying to like yeah I noticed this yesterday that like Mondays I "
             "sort of start the day with this not like a panic but like a"
         ),
-        "audio": "prompts/conversational_a.wav"
+        "audio": prompt_filepath_conversational_a
     },
     "conversational_b": {
         "text": (
@@ -29,28 +39,9 @@ SPEAKER_PROMPTS = {
             "come out. So like everyone, when they come into the park, they get like this little "
             "bracelet and then you can go punching question blocks around."
         ),
-        "audio": "prompts/conversational_b.wav"
+        "audio": prompt_filepath_conversational_b
     }
 }
-
-def ensure_prompts_downloaded():
-    """Download prompt files if they don't exist locally"""
-    os.makedirs("prompts", exist_ok=True)
-
-    for prompt_name, prompt_info in SPEAKER_PROMPTS.items():
-        local_path = prompt_info["audio"]
-        if not os.path.exists(local_path):
-            try:
-                hf_hub_download(
-                    repo_id="sesame/csm-1b",
-                    filename=f"prompts/{prompt_name}.wav",
-                    local_dir=".",
-                    local_dir_use_symlinks=False
-                )
-                print(f"Downloaded {local_path}")
-            except Exception as e:
-                print(f"Error downloading {local_path}: {str(e)}")
-                raise
 
 def load_prompt_audio(audio_path: str, target_sample_rate: int) -> torch.Tensor:
     audio_tensor, sample_rate = torchaudio.load(audio_path)
@@ -66,69 +57,61 @@ def prepare_prompt(text: str, speaker: int, audio_path: str, sample_rate: int) -
     return Segment(text=text, speaker=speaker, audio=audio_tensor)
 
 def main():
-    # Download prompts if needed
-    ensure_prompts_downloaded()
-
     # Select the best available device, skipping MPS due to float64 limitations
     if torch.cuda.is_available():
         device = "cuda"
     else:
         device = "cpu"
     print(f"Using device: {device}")
-    
-    try:
-        # Load model
-        generator = load_csm_1b(device)
-        
-        # Prepare prompts
-        prompt_a = prepare_prompt(
-            SPEAKER_PROMPTS["conversational_a"]["text"],
-            0,
-            SPEAKER_PROMPTS["conversational_a"]["audio"],
-            generator.sample_rate
-        )
-        
-        prompt_b = prepare_prompt(
-            SPEAKER_PROMPTS["conversational_b"]["text"],
-            1,
-            SPEAKER_PROMPTS["conversational_b"]["audio"],
-            generator.sample_rate
-        )
-        
-        # Generate conversation
-        conversation = [
-            {"text": "Hey how are you doing?", "speaker_id": 0},
-            {"text": "Pretty good, pretty good. How about you?", "speaker_id": 1},
-            {"text": "I'm great! So happy to be speaking with you today.", "speaker_id": 0},
-            {"text": "Me too! This is some cool stuff, isn't it?", "speaker_id": 1}
-        ]
-        
-        # Generate each utterance
-        generated_segments = []
-        prompt_segments = [prompt_a, prompt_b]
-        
-        for utterance in conversation:
-            print(f"Generating: {utterance['text']}")
-            audio_tensor = generator.generate(
-                text=utterance['text'],
-                speaker=utterance['speaker_id'],
-                context=prompt_segments + generated_segments,
-                max_audio_length_ms=10_000,
-            )
-            generated_segments.append(Segment(text=utterance['text'], speaker=utterance['speaker_id'], audio=audio_tensor))
 
-        # Concatenate all generations
-        all_audio = torch.cat([seg.audio for seg in generated_segments], dim=0)
-        torchaudio.save(
-            "full_conversation.wav",
-            all_audio.unsqueeze(0).cpu(),
-            generator.sample_rate
+    # Load model
+    generator = load_csm_1b(device)
+
+    # Prepare prompts
+    prompt_a = prepare_prompt(
+        SPEAKER_PROMPTS["conversational_a"]["text"],
+        0,
+        SPEAKER_PROMPTS["conversational_a"]["audio"],
+        generator.sample_rate
+    )
+
+    prompt_b = prepare_prompt(
+        SPEAKER_PROMPTS["conversational_b"]["text"],
+        1,
+        SPEAKER_PROMPTS["conversational_b"]["audio"],
+        generator.sample_rate
+    )
+
+    # Generate conversation
+    conversation = [
+        {"text": "Hey how are you doing?", "speaker_id": 0},
+        {"text": "Pretty good, pretty good. How about you?", "speaker_id": 1},
+        {"text": "I'm great! So happy to be speaking with you today.", "speaker_id": 0},
+        {"text": "Me too! This is some cool stuff, isn't it?", "speaker_id": 1}
+    ]
+
+    # Generate each utterance
+    generated_segments = []
+    prompt_segments = [prompt_a, prompt_b]
+
+    for utterance in conversation:
+        print(f"Generating: {utterance['text']}")
+        audio_tensor = generator.generate(
+            text=utterance['text'],
+            speaker=utterance['speaker_id'],
+            context=prompt_segments + generated_segments,
+            max_audio_length_ms=10_000,
         )
-        print("Successfully generated full_conversation.wav")
-            
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return
+        generated_segments.append(Segment(text=utterance['text'], speaker=utterance['speaker_id'], audio=audio_tensor))
+
+    # Concatenate all generations
+    all_audio = torch.cat([seg.audio for seg in generated_segments], dim=0)
+    torchaudio.save(
+        "full_conversation.wav",
+        all_audio.unsqueeze(0).cpu(),
+        generator.sample_rate
+    )
+    print("Successfully generated full_conversation.wav")
 
 if __name__ == "__main__":
     main() 
