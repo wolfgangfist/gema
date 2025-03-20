@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 # Disable Triton compilation
 os.environ["NO_TORCH_COMPILE"] = "1"
-
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 # Default prompts are available at https://hf.co/sesame/csm-1b
 prompt_filepath_conversational_a = hf_hub_download(
     repo_id="sesame/csm-1b",
@@ -60,12 +60,15 @@ def main():
     # Select the best available device, skipping MPS due to float64 limitations
     if torch.cuda.is_available():
         device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
     else:
         device = "cpu"
     print(f"Using device: {device}")
 
     # Load model
     generator = load_csm_1b(device)
+    generator._model= torch.compile(generator._model, mode="reduce-overhead")
 
     # Prepare prompts
     prompt_a = prepare_prompt(
@@ -87,7 +90,7 @@ def main():
         {"text": "Hey how are you doing?", "speaker_id": 0},
         {"text": "Pretty good, pretty good. How about you?", "speaker_id": 1},
         {"text": "I'm great! So happy to be speaking with you today.", "speaker_id": 0},
-        {"text": "Me too! This is some cool stuff, isn't it?", "speaker_id": 1}
+        {"text": "Me too! This is some cool stuff, isn't it?", "speaker_id": 0}
     ]
 
     # Generate each utterance

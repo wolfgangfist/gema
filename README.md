@@ -31,6 +31,7 @@ pip install -r requirements.txt
 
 # Disable lazy compilation in Mimi
 export NO_TORCH_COMPILE=1
+export PYTORCH_ENABLE_MPS_FALLBACK=1
 
 # You will need access to CSM-1B and Llama-3.2-1B
 huggingface-cli login
@@ -40,6 +41,7 @@ huggingface-cli login
 
 The `triton` package cannot be installed in Windows. Instead use `pip install triton-windows`.
 
+`bitsandbytes` must be installed as well.
 ## Usage
 
 Run the example script:
@@ -47,7 +49,7 @@ Run the example script:
 python run_csm.py
 ```
 You can also create your own script using the example code below.
-
+-> please use the existing run_csm script for m1 chip optimization
 Generate a sentence
 
 ```python
