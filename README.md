@@ -1,4 +1,4 @@
-# CSM
+# CSM_M1 - Optimized for M1 Chip on MacOS
 
 **2025/03/13** - We are releasing the 1B CSM variant. The checkpoint is [hosted on Hugging Face](https://huggingface.co/sesame/csm_1b).
 
