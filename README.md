@@ -20,7 +20,7 @@ Our fork adds **streaming audio generation**, **real-time playback**, and **perf
 ### Setup
 
 ```bash
-git clone git@github.com:YourUsername/csm-streaming.git
+git clone git@github.com:davidbrowne17/csm-streaming.git
 cd csm-streaming
 python3.10 -m venv .venv
 source .venv/bin/activate
