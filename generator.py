@@ -262,7 +262,7 @@ class Generator:
         for segment in context:
             segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
             tokens.append(segment_tokens)
-            tokens.mask.append(segment_tokens_mask)
+            tokens_mask.append(segment_tokens_mask)
 
         gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(text, speaker)
         tokens.append(gen_segment_tokens)
@@ -348,24 +348,9 @@ def load_csm_1b(device: str = "cuda") -> Generator:
     print("Loading CSM-1B model with advanced optimizations...")
     model = Model.from_pretrained("sesame/csm-1b")
     
+    model = torch.compile(model, dynamic=True, fullgraph=True, backend='cudagraphs')
     # Apply half-precision for faster inference
     model.to(device=device, dtype=torch.bfloat16)
-    if platform.system() != "Windows":
-        # Apply aggressive compilation with inductor backend
-        model.backbone = torch.compile(
-            model.backbone, 
-            mode='max-autotune', 
-            fullgraph=True, 
-            backend='inductor'
-        )
-        
-        model.decoder = torch.compile(
-            model.decoder, 
-            mode='max-autotune', 
-            fullgraph=True, 
-            backend='inductor'
-        )
-    
     print("Model compilation complete. Creating generator...")
     generator = Generator(model)
     return generator
@@ -447,7 +432,7 @@ def generate_streaming_audio(
     ):
         chunk_count += 1
         print(f"Generated chunk {chunk_count}")
-    
+        print(f"Chunk {chunk_count} in {time.time() - start_time:.2f} seconds")
     # Write final file
     writer.write_file()
     
