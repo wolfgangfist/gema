@@ -3,7 +3,7 @@ from typing import List, Tuple, Generator as PyGenerator, Optional, Callable
 import time
 import queue
 import threading
-
+import platform
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
@@ -128,7 +128,7 @@ class Generator:
         on_chunk_generated: Optional[Callable[[torch.Tensor], None]] = None,
     ) -> PyGenerator[torch.Tensor, None, None]:
         """
-        Stream audio chunks as they're generated.
+        Stream audio chunks as they're generated with optimized speed.
         
         Args:
             text: Text to synthesize
@@ -176,31 +176,33 @@ class Generator:
         # Frame buffer for streaming
         frame_buffer = []
         
-        # Process frames for streaming
-        for i in range(max_generation_len):
-            sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-            if torch.all(sample == 0):
-                # EOS token, finish generation
-                break
+        # Use the streaming context manager for optimized decoding
+        with self._audio_tokenizer.streaming(1):
+            # Process frames for streaming
+            for i in range(max_generation_len):
+                sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+                if torch.all(sample == 0):
+                    # EOS token, finish generation
+                    break
 
-            frame_buffer.append(sample)
-            
-            # When we have enough frames in the buffer, decode and yield
-            if len(frame_buffer) >= self._stream_buffer_size:
-                audio_chunk = self._decode_frames(frame_buffer)
-                frame_buffer = []
+                frame_buffer.append(sample)
                 
-                if on_chunk_generated:
-                    on_chunk_generated(audio_chunk)
+                # When we have enough frames in the buffer, decode and yield
+                if len(frame_buffer) >= self._stream_buffer_size:
+                    audio_chunk = self._decode_frames(frame_buffer)
+                    frame_buffer = []
                     
-                yield audio_chunk
+                    if on_chunk_generated:
+                        on_chunk_generated(audio_chunk)
+                        
+                    yield audio_chunk
 
-            # Update for next token generation
-            curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
-            curr_tokens_mask = torch.cat(
-                [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
-            ).unsqueeze(1)
-            curr_pos = curr_pos[:, -1:] + 1
+                # Update for next token generation
+                curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
+                curr_tokens_mask = torch.cat(
+                    [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
+                ).unsqueeze(1)
+                curr_pos = curr_pos[:, -1:] + 1
         
         # Decode and yield any remaining frames
         if frame_buffer:
@@ -208,6 +210,7 @@ class Generator:
             if on_chunk_generated:
                 on_chunk_generated(audio_chunk)
             yield audio_chunk
+
 
     @torch.inference_mode()
     def generate(
@@ -221,7 +224,7 @@ class Generator:
         stream: bool = False,
     ) -> torch.Tensor:
         """
-        Generate audio for the given text.
+        Generate audio for the given text with optimized speed.
         
         Args:
             text: Text to synthesize
@@ -259,7 +262,7 @@ class Generator:
         for segment in context:
             segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
             tokens.append(segment_tokens)
-            tokens_mask.append(segment_tokens_mask)
+            tokens.mask.append(segment_tokens_mask)
 
         gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(text, speaker)
         tokens.append(gen_segment_tokens)
@@ -280,18 +283,20 @@ class Generator:
                 f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
             )
 
-        for i in range(max_generation_len):
-            sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-            if torch.all(sample == 0):
-                break  # eos
+        # Use the streaming context manager for optimized decoding
+        with self._audio_tokenizer.streaming(1):
+            for i in range(max_generation_len):
+                sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+                if torch.all(sample == 0):
+                    break  # eos
 
-            samples.append(sample)
+                samples.append(sample)
 
-            curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
-            curr_tokens_mask = torch.cat(
-                [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
-            ).unsqueeze(1)
-            curr_pos = curr_pos[:, -1:] + 1
+                curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
+                curr_tokens_mask = torch.cat(
+                    [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
+                ).unsqueeze(1)
+                curr_pos = curr_pos[:, -1:] + 1
 
         if not samples:
             return torch.tensor([])
@@ -328,19 +333,40 @@ class AudioStreamWriter:
 
 
 def load_csm_1b(device: str = "cuda") -> Generator:
-    # Enable cudnn benchmarking for optimal kernel selection
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-        # Enable flash attention if available
-        if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
-            torch.backends.cuda.enable_flash_sdp(True)
+    """
+    Load the CSM-1B model with advanced optimizations for maximum speed.
     
-    print("Loading optimized CSM-1B model...")
+    Args:
+        device: Device to load the model on, default is "cuda"
+        
+    Returns:
+        Generator: Optimized audio generator
+    """
+    # Enable cudnn benchmarking for optimal kernel selection
+    torch.backends.cuda.enable_flash_sdp(True)
+    
+    print("Loading CSM-1B model with advanced optimizations...")
     model = Model.from_pretrained("sesame/csm-1b")
     
     # Apply half-precision for faster inference
     model.to(device=device, dtype=torch.bfloat16)
+    if platform.system() != "Windows":
+        # Apply aggressive compilation with inductor backend
+        model.backbone = torch.compile(
+            model.backbone, 
+            mode='max-autotune', 
+            fullgraph=True, 
+            backend='inductor'
+        )
+        
+        model.decoder = torch.compile(
+            model.decoder, 
+            mode='max-autotune', 
+            fullgraph=True, 
+            backend='inductor'
+        )
     
+    print("Model compilation complete. Creating generator...")
     generator = Generator(model)
     return generator
 
