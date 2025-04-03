@@ -831,12 +831,16 @@ def generate_streaming_audio(
     print("Generating audio with streaming...")
     start_time = time.time()
     
-    # Try to set high process priority if possible
     try:
         import psutil
         process = psutil.Process()
-        process.nice(psutil.HIGH_PRIORITY_CLASS if platform.system() == 'Windows' else -10)
-    except (ImportError, PermissionError):
+        if platform.system() == 'Windows':
+            process.nice(psutil.HIGH_PRIORITY_CLASS)
+        else:
+            # Use a non-negative value for Linux when not running as root
+            process.nice(0)  # Normal priority
+    except (ImportError, PermissionError, psutil.AccessDenied):
+        # Make sure to catch psutil.AccessDenied as well
         pass
     
     # Generate audio chunks
