@@ -27,9 +27,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install sounddevice  # Optional: for real-time audio playback
 
-# Disable lazy compilation in Mimi
-export NO_TORCH_COMPILE=1
-
 # You will need access to CSM-1B and Llama-3.2-1B
 huggingface-cli login
 ```
@@ -198,7 +195,7 @@ You will need a CUDA gpu with at least 12gb of vram depending on your dataset si
 
 Our optimized version includes several performance enhancements:
 
-- **Streaming Generation**: Processes and outputs audio in chunks instead of waiting for the entire generation
+- **Streaming Generation**: Processes and outputs audio in chunks instead of waiting for the entire generation achieving a Real-time factor (RTF): 2.933x without Flash-Attn on a Windows machine
 - **Frame Batching**: Processes multiple frames at once for better GPU utilization
 - **Lower Temperature Sampling**: Faster sampling with minimal quality loss
 - **Half-precision Inference**: Uses bfloat16/float16 for faster processing
