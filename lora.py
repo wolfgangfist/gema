@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DIR = "audio_data"
 OUTPUT_DIR = "finetuned_model"
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 32
-LEARNING_RATE = 5e-6
+LEARNING_RATE = 2e-6
 USE_WANDB = False
 SEED = 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -50,7 +50,7 @@ class LoRALinear(nn.Module):
     adds two low-rank trainable matrices A and B, whose product is added
     to the forward pass.
     """
-    def __init__(self, in_features, out_features, r=8, alpha=16, dropout=0.0, bias=True):
+    def __init__(self, in_features, out_features, r=16, alpha=16, dropout=0.0, bias=True):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -82,7 +82,7 @@ class LoRALinear(nn.Module):
         return result + self.scaling * lora_out
 
 def replace_linear_with_lora(module: nn.Module,
-                             r=8,
+                             r=16,
                              alpha=16,
                              dropout=0.0,
                              target_linear_names=None):
@@ -307,6 +307,20 @@ def prepare_csm_model_for_training():
     mimi = loaders.get_mimi(mimi_weight, device=DEVICE)
     mimi.set_num_codebooks(32)
     audio_tokenizer = mimi
+    # Create codebook embedding layer using Mimi's codebook 0 centroids
+    try:
+        codebook_0_centroids = mimi.quantizer.codebooks[0].weight.data  # [V, D]
+        num_codebook_0_tokens, embedding_dim = codebook_0_centroids.shape
+        model.codebook_embedding = nn.Embedding(num_codebook_0_tokens, embedding_dim).to(DEVICE)
+        model.codebook_embedding.weight.data.copy_(codebook_0_centroids)
+        logger.info(f"Initialized codebook_embedding with shape: {codebook_0_centroids.shape}")
+    except Exception as e:
+        logger.error(f"Failed to initialize codebook_embedding from Mimi: {e}")
+        # fallback: randomly initialize
+        num_codebook_0_tokens, embedding_dim = 1024, 1024  # Adjust if needed
+        model.codebook_embedding = nn.Embedding(num_codebook_0_tokens, embedding_dim).to(DEVICE)
+        nn.init.xavier_uniform_(model.codebook_embedding.weight)
+        logger.info("Falling back to random init for codebook_embedding")
 
     # Some fallback logic for config
     if not hasattr(model.config, 'get'):
@@ -321,7 +335,7 @@ def prepare_csm_model_for_training():
     logger.info("Applying LoRA to model...")
     model = replace_linear_with_lora(
         model,
-        r=8,
+        r=16,
         alpha=16,
         dropout=0.0,
         target_linear_names=None
@@ -406,45 +420,68 @@ def compute_loss_for_codebooks_single_pass(
 
 def single_pass_forward(model, bridging_module, target_tokens, target_masks, positions):
     """
-    Single-pass forward:
-      1) Pass through embedding
-      2) Sum up with mask
-      3) Through backbone
-      4) Bridge 2048->1024
-      5) Through decoder
-      6) Compute codebook loss
+    Forward pass matching CSM behavior:
+      - Decoder input: concat(last backbone state, codebook 0 embeddings)
+      - Loss: computed for codebooks [1..N-1], starting from decoder position 1
     """
-    embed = model._embed_tokens(target_tokens)
-    masked_embed = embed * target_masks.unsqueeze(-1)
-    h = masked_embed.sum(dim=2)
+    device = next(model.parameters()).device
+
+    # Text token embeddings, mask, and summing
+    embed = model._embed_tokens(target_tokens)  # [B, T, 33, D]
+    masked_embed = embed * target_masks.unsqueeze(-1)  # [B, T, 33, D]
+    h = masked_embed.sum(dim=2)  # [B, T, D]
+
     # Backbone
-    backbone_out = model.backbone(h, input_pos=positions, mask=None)
+    backbone_out = model.backbone(h, input_pos=positions, mask=None)  # [B, T, 2048]
 
-    # bridging
-    bridging_out = bridging_module(backbone_out)
+    # Bridging to decoder dimension
+    bridging_out = bridging_module(backbone_out)  # [B, T, 1024]
 
-    # decoder
-    decoder_out = model.decoder(bridging_out, input_pos=positions, mask=None)
+    # Codebook 0 logits + predicted tokens
+    codebook0_logits = model.codebook0_head(backbone_out)  # [B, T, V]
+    codebook0_tokens = torch.argmax(codebook0_logits, dim=-1)  # [B, T]
 
-    # codebook loss
+    # Clamp indices to valid range for embedding (avoid CUDA assert)
+    codebook0_tokens = codebook0_tokens.clamp(0, model.codebook_embedding.num_embeddings - 1)
+
+    # Codebook 0 embedding lookup
+    c0_embed = model.codebook_embedding(codebook0_tokens)  # [B, T, 1024]
+
+    # Get last token from bridging as initial input to decoder
+    last_h = bridging_out[:, -1, :].unsqueeze(1)  # [B, 1, 1024]
+
+    # Concatenate [last_h] + [codebook 0 embeddings]
+    decoder_input = torch.cat([last_h, c0_embed], dim=1)  # [B, T+1, 1024]
+    decoder_positions = torch.arange(decoder_input.size(1), device=device).unsqueeze(0)
+
+    # Decoder
+    decoder_out = model.decoder(decoder_input, input_pos=decoder_positions, mask=None)  # [B, T+1, 1024]
+
+    # Loss (skip decoder position 0 which corresponds to last_h)
     loss = compute_loss_for_codebooks_single_pass(
-        backbone_out,
-        decoder_out,
-        model,
-        target_tokens[..., :-1],  # only audio codebooks
-        target_masks[..., :-1],
-        next(model.parameters()).device
+        backbone_out=backbone_out,
+        decoder_out=decoder_out[:, 1:],  # skip position 0
+        model=model,
+        target_tokens=target_tokens[..., :-1],  # audio tokens only
+        target_masks=target_masks[..., :-1],
+        device=device
     )
+
     return loss
+
 
 def strip_bias_keys(state_dict: dict) -> dict:
     new_sd = {}
     for k, v in state_dict.items():
+        if k == "codebook_embedding.weight":
+            print(f"Stripping {k} from checkpoint (training-only layer)")
+            continue
         if not k.endswith(".bias"):
             new_sd[k] = v
         else:
-            print(f"Stripping {k} from checkpoint")  # optional logging
+            print(f"Stripping {k} from checkpoint")
     return new_sd
+
 
 def remove_lora_modules(module: nn.Module) -> nn.Module:
     """

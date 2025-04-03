@@ -590,8 +590,8 @@ def generate_streaming_audio(
     context: List[Segment],
     output_file: str,
     max_audio_length_ms: float = 90_000,
-    temperature: float = 0.7,
-    topk: int = 30,
+    temperature: float = 0.8,
+    topk: int = 50,
     play_audio: bool = False,
 ):
     """
