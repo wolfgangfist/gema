@@ -238,5 +238,5 @@ By using this model, you agree to comply with all applicable laws and ethical gu
 ## Original Authors
 Johan Schalkwyk, Ankit Kumar, Dan Lyth, Sefik Emre Eskimez, Zack Hodari, Cinjon Resnick, Ramon Sanabria, Raven Jiang, and the Sesame team.
 
-## Streaming Implementation
+## Streaming and Finetuning Implementation
 David Browne
