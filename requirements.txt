@@ -7,4 +7,6 @@ moshi==0.2.2
 torchtune==0.4.0
 torchao==0.9.0
 bitsandbytes
+peft
+wandb
 silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master

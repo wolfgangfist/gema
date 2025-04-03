@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from typing import List, Tuple, Generator as PyGenerator, Optional, Callable
 import time
 import queue
@@ -7,7 +8,7 @@ import platform
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
-from models import Model
+from models import Model, ModelArgs
 from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
@@ -330,6 +331,47 @@ class AudioStreamWriter:
             audio = torch.cat(self.audio_chunks)
             # Save to file
             torchaudio.save(self.filename, audio.unsqueeze(0).cpu(), self.sample_rate)
+
+from safetensors.torch import load_file
+import os
+import torch
+from models import Model, ModelArgs
+from generator import Generator
+
+def load_csm_1b_local(model_path: str, device: str = "cuda"):
+    """
+    Load the CSM-1B model from a local .safetensors checkpoint with advanced optimizations.
+    
+    Args:
+        model_path (str): Path to the local folder
+        device (str): Device to load the model on, default "cuda"
+    
+    Returns:
+        Generator: Optimized audio generator
+    """
+    torch.backends.cuda.enable_flash_sdp(True)
+    print(f"Loading CSM-1B model from local checkpoint '{model_path}' with advanced optimizations...")
+
+    config = ModelArgs(
+        backbone_flavor="llama-1B",
+        decoder_flavor="llama-100M",
+        text_vocab_size=128256,
+        audio_vocab_size=2051,
+        audio_num_codebooks=32,
+    )
+
+    model = Model(config)
+    
+    safetensor_path = os.path.join(model_path, "model.safetensors")
+    state_dict = load_file(safetensor_path, device=device)
+    model.load_state_dict(state_dict, strict=True)
+
+    model = torch.compile(model, dynamic=True, fullgraph=True, backend='cudagraphs')
+    model.to(device=device, dtype=torch.bfloat16)
+
+    print("Model compilation complete. Creating generator...")
+    generator = Generator(model)
+    return generator
 
 
 def load_csm_1b(device: str = "cuda") -> Generator:
