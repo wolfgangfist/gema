@@ -40,16 +40,13 @@ def load_llama3_tokenizer():
 
 
 class Generator:
-    def __init__(
-        self,
-        model: Model,
-    ):
+    def __init__(self, model: Model):
         self._model = model
         self._model.setup_caches(1)
 
         self._text_tokenizer = load_llama3_tokenizer()
-
         device = next(model.parameters()).device
+
         mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
         mimi = loaders.get_mimi(mimi_weight, device=device)
         mimi.set_num_codebooks(32)
@@ -57,9 +54,9 @@ class Generator:
 
         self.sample_rate = mimi.sample_rate
         self.device = device
-        
-        # Buffer size for streaming (number of frames to collect before decoding)
+
         self._stream_buffer_size = 10
+        self.max_seq_len = 2048
 
     def _tokenize_text_segment(self, text: str, speaker: int) -> Tuple[torch.Tensor, torch.Tensor]:
         frame_tokens = []
@@ -100,14 +97,26 @@ class Generator:
         return torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0)
 
     def _tokenize_segment(self, segment: Segment) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-            (seq_len, 33), (seq_len, 33)
-        """
         text_tokens, text_masks = self._tokenize_text_segment(segment.text, segment.speaker)
         audio_tokens, audio_masks = self._tokenize_audio(segment.audio)
 
+        total_len = text_tokens.size(0) + audio_tokens.size(0)
+
+        if total_len > self.max_seq_len:
+            overflow = total_len - self.max_seq_len
+
+            if text_tokens.size(0) > overflow:
+                text_tokens = text_tokens[overflow:]
+                text_masks = text_masks[overflow:]
+            else:
+                audio_overflow = overflow - text_tokens.size(0)
+                text_tokens = text_tokens[0:0]
+                text_masks = text_masks[0:0]
+                audio_tokens = audio_tokens[audio_overflow:]
+                audio_masks = audio_masks[audio_overflow:]
+
         return torch.cat([text_tokens, audio_tokens], dim=0), torch.cat([text_masks, audio_masks], dim=0)
+
     
     def _decode_frames(self, frames):
         """Decode a batch of frames into audio with optimized memory handling"""
@@ -129,145 +138,121 @@ class Generator:
         topk: int = 30,
         on_chunk_generated: Optional[Callable[[torch.Tensor], None]] = None,
     ) -> PyGenerator[torch.Tensor, None, None]:
-        """
-        Stream audio chunks as they're generated with extreme optimization for real-time performance.
-        """
-        # Enable CUDA optimizations
         if torch.cuda.is_available():
-            torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 for faster matrix multiplications
-            torch.backends.cudnn.benchmark = True  # Optimize cudnn
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-            
+
         self._model.reset_caches()
 
         max_generation_len = int(max_audio_length_ms / 80)
-        
+
         tokens, tokens_mask = [], []
-        
+
         context_start = time.time()
         if context:
             for segment in context:
                 segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
                 tokens.append(segment_tokens)
                 tokens_mask.append(segment_tokens_mask)
-        
+
         gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(text, speaker)
         tokens.append(gen_segment_tokens)
         tokens_mask.append(gen_segment_tokens_mask)
-        
-        context_time = time.time() - context_start
-        if context_time > 0.1: 
-            print(f"Context processing took {context_time:.3f}s")
 
         prompt_tokens = torch.cat(tokens, dim=0).long().to(self.device)
         prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool().to(self.device)
+
+        max_seq_len = 2048
+        if prompt_tokens.size(0) > max_seq_len:
+            prompt_tokens = prompt_tokens[-max_seq_len:]
+            prompt_tokens_mask = prompt_tokens_mask[-max_seq_len:]
 
         curr_tokens = prompt_tokens.unsqueeze(0)
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        max_seq_len = 2048
-        max_context_len = max_seq_len - max_generation_len
-        if curr_tokens.size(1) >= max_context_len:
-            raise ValueError(
-                f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
-            )
-
-        batch_size = 10 
-        
+        batch_size = 10
         buffer_size = 30
         frame_buffer = []
-        
+
         if torch.cuda.is_available():
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
-        
+
         zeros_1_1 = torch.zeros(1, 1).long().to(self.device)
         zeros_mask_1_1 = torch.zeros(1, 1).bool().to(self.device)
-        
+
         def update_tokens(sample):
             nonlocal curr_tokens, curr_tokens_mask, curr_pos
             ones = torch.ones_like(sample).bool()
             curr_tokens = torch.cat([sample, zeros_1_1], dim=1).unsqueeze(1)
             curr_tokens_mask = torch.cat([ones, zeros_mask_1_1], dim=1).unsqueeze(1)
             curr_pos = curr_pos[:, -1:] + 1
-        
+
         with self._audio_tokenizer.streaming(1):
             i = 0
             generation_start = time.time()
-            
+
             while i < max_generation_len:
                 batch_end = min(i + batch_size, max_generation_len)
                 batch_size_actual = batch_end - i
-                
+
                 batch_samples = []
-                
-                for j in range(batch_size_actual):
+
+                for _ in range(batch_size_actual):
                     with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
                         sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-                    
+
                     if torch.all(sample == 0):
-                        # EOS token, finish generation
                         break
-                    
+
                     batch_samples.append(sample)
-                    update_tokens(sample)  # Use optimized update function
-                
-                # Break if we hit EOS
+                    update_tokens(sample)
+
                 if not batch_samples:
                     break
-                    
-                # Add all samples to frame buffer
+
                 frame_buffer.extend(batch_samples)
                 i += len(batch_samples)
-                
-                # When buffer is full, decode and yield
+
                 if len(frame_buffer) >= buffer_size:
                     frames_stacked = torch.stack(frame_buffer).permute(1, 2, 0)
-                    
-                    # Use fast synchronous path for audio decoding
                     audio_chunk = self._audio_tokenizer.decode(frames_stacked).squeeze(0).squeeze(0)
-                    
                     frame_buffer = []
-                    
                     if on_chunk_generated:
                         cpu_chunk = audio_chunk.cpu()
                         on_chunk_generated(cpu_chunk)
                         yield cpu_chunk
                     else:
                         yield audio_chunk.cpu()
-                        
-                # This prevents memory buildup if playback is much slower than generation
+
                 if i >= 100 and (i % 100 == 0):
                     if torch.cuda.is_available():
-                        # This ensures we don't queue up too many CUDA operations
                         torch.cuda.synchronize()
-        
+
         if frame_buffer:
             frames_stacked = torch.stack(frame_buffer).permute(1, 2, 0)
             audio_chunk = self._audio_tokenizer.decode(frames_stacked).squeeze(0).squeeze(0)
-            
             cpu_chunk = audio_chunk.cpu()
             if on_chunk_generated:
                 on_chunk_generated(cpu_chunk)
             yield cpu_chunk
-        
-        # Report performance metrics
+
         if torch.cuda.is_available():
             end_event.record()
             torch.cuda.synchronize()
             gpu_time = start_event.elapsed_time(end_event) / 1000.0
             total_time = time.time() - generation_start
-            
             frames_generated = i
-            audio_seconds = frames_generated * 0.08  # 80ms per frame
+            audio_seconds = frames_generated * 0.08
             rtf = total_time / audio_seconds if audio_seconds > 0 else float('inf')
-            
             print(f"GPU processing time: {gpu_time:.2f}s, Total time: {total_time:.2f}s")
             print(f"Generated {frames_generated} frames ({audio_seconds:.2f}s of audio)")
             print(f"Real-time factor: {rtf:.3f}x (target: <1.0)")
+
 
 
     @torch.inference_mode()
@@ -281,42 +266,22 @@ class Generator:
         topk: int = 30,
         stream: bool = False,
     ) -> torch.Tensor:
-        """
-        Generate audio for the given text with optimized speed.
-        
-        Args:
-            text: Text to synthesize
-            speaker: Speaker ID
-            context: Context segments
-            max_audio_length_ms: Maximum audio length in milliseconds
-            temperature: Sampling temperature
-            topk: Top-k sampling parameter
-            stream: Whether to use streaming generation internally
-            
-        Returns:
-            Generated audio tensor
-        """
         if stream:
-            # Use streaming implementation but combine all chunks at the end
             audio_chunks = []
             for chunk in self.generate_stream(text, speaker, context, max_audio_length_ms, temperature, topk):
                 audio_chunks.append(chunk)
-            
             if not audio_chunks:
                 return torch.tensor([])
-                
-            # Concatenate all chunks
             return torch.cat(audio_chunks)
-        
-        # Non-streaming implementation
-        # Clear the GPU memory cache to free up space
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            
+
         self._model.reset_caches()
 
         max_generation_len = int(max_audio_length_ms / 80)
         tokens, tokens_mask = [], []
+
         for segment in context:
             segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
             tokens.append(segment_tokens)
@@ -329,25 +294,21 @@ class Generator:
         prompt_tokens = torch.cat(tokens, dim=0).long().to(self.device)
         prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool().to(self.device)
 
-        samples = []
+        max_seq_len = 2048
+        if prompt_tokens.size(0) > max_seq_len:
+            prompt_tokens = prompt_tokens[-max_seq_len:]
+            prompt_tokens_mask = prompt_tokens_mask[-max_seq_len:]
+
         curr_tokens = prompt_tokens.unsqueeze(0)
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        max_seq_len = 2048
-        max_context_len = max_seq_len - max_generation_len
-        if curr_tokens.size(1) >= max_context_len:
-            raise ValueError(
-                f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
-            )
-
-        # Use the streaming context manager for optimized decoding
+        samples = []
         with self._audio_tokenizer.streaming(1):
-            for i in range(max_generation_len):
+            for _ in range(max_generation_len):
                 sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
                 if torch.all(sample == 0):
-                    break  # eos
-
+                    break
                 samples.append(sample)
 
                 curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
@@ -358,9 +319,9 @@ class Generator:
 
         if not samples:
             return torch.tensor([])
-            
-        audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
-        return audio
+
+        return self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
+
 
 
 class AudioStreamWriter:
