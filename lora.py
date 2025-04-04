@@ -419,54 +419,54 @@ def compute_loss_for_codebooks_single_pass(
     return total_loss
 
 def single_pass_forward(model, bridging_module, target_tokens, target_masks, positions):
-    """
-    Forward pass matching CSM behavior:
-      - Decoder input: concat(last backbone state, codebook 0 embeddings)
-      - Loss: computed for codebooks [1..N-1], starting from decoder position 1
-    """
     device = next(model.parameters()).device
-
-    # Text token embeddings, mask, and summing
-    embed = model._embed_tokens(target_tokens)  # [B, T, 33, D]
-    masked_embed = embed * target_masks.unsqueeze(-1)  # [B, T, 33, D]
-    h = masked_embed.sum(dim=2)  # [B, T, D]
-
-    # Backbone
-    backbone_out = model.backbone(h, input_pos=positions, mask=None)  # [B, T, 2048]
-
-    # Bridging to decoder dimension
-    bridging_out = bridging_module(backbone_out)  # [B, T, 1024]
-
-    # Codebook 0 logits + predicted tokens
-    codebook0_logits = model.codebook0_head(backbone_out)  # [B, T, V]
-    codebook0_tokens = torch.argmax(codebook0_logits, dim=-1)  # [B, T]
-
-    # Clamp indices to valid range for embedding (avoid CUDA assert)
-    codebook0_tokens = codebook0_tokens.clamp(0, model.codebook_embedding.num_embeddings - 1)
-
-    # Codebook 0 embedding lookup
-    c0_embed = model.codebook_embedding(codebook0_tokens)  # [B, T, 1024]
-
-    # Get last token from bridging as initial input to decoder
-    last_h = bridging_out[:, -1, :].unsqueeze(1)  # [B, 1, 1024]
-
-    # Concatenate [last_h] + [codebook 0 embeddings]
-    decoder_input = torch.cat([last_h, c0_embed], dim=1)  # [B, T+1, 1024]
-    decoder_positions = torch.arange(decoder_input.size(1), device=device).unsqueeze(0)
-
-    # Decoder
-    decoder_out = model.decoder(decoder_input, input_pos=decoder_positions, mask=None)  # [B, T+1, 1024]
-
-    # Loss (skip decoder position 0 which corresponds to last_h)
+    dtype = next(model.parameters()).dtype
+    
+    embed = model._embed_tokens(target_tokens)
+    masked_embed = embed * target_masks.unsqueeze(-1)
+    h = masked_embed.sum(dim=2)
+    
+    backbone_out = model.backbone(h, input_pos=positions, mask=None).to(dtype)
+    bridging_out = bridging_module(backbone_out)
+    
+    codebook0_logits = model.codebook0_head(backbone_out)
+    codebook0_tokens = torch.argmax(codebook0_logits, dim=-1).clamp(0, model.codebook_embedding.num_embeddings - 1)
+    c0_embed = model.codebook_embedding(codebook0_tokens)
+    
+    # Get the last hidden state from bridging module
+    last_h = bridging_out[:, -1, :].unsqueeze(1)
+    
+    # Concatenate the last hidden state with the codebook embeddings
+    decoder_input = torch.cat([last_h, c0_embed], dim=1)
+    
+    # Process decoder inputs in parallel
+    B, S, D = decoder_input.shape  # Batch, Sequence length, Dimension
+    
+    # Reshape to (B*S, D) to process all tokens in parallel
+    decoder_input_flat = decoder_input.view(-1, D).unsqueeze(1)  # [B*S, 1, D]
+    
+    # Run decoder on all inputs in parallel
+    decoder_out_flat = model.decoder(decoder_input_flat).to(dtype)  # [B*S, 1, output_dim]
+    
+    # Reshape back to original batch and sequence dimensions
+    decoder_out = decoder_out_flat.view(B, S, -1)  # [B, S, output_dim]
+    
+    # Remove the first token (corresponding to last_h) as in original code
+    decoder_out = decoder_out[:, 1:, :]  # [B, T, 1024]
+    
+    # Safety check: handle empty sequences
+    if decoder_out.size(1) == 0:
+        return torch.tensor(0.0, requires_grad=True, device=device)
+    
     loss = compute_loss_for_codebooks_single_pass(
         backbone_out=backbone_out,
-        decoder_out=decoder_out[:, 1:],  # skip position 0
+        decoder_out=decoder_out,
         model=model,
-        target_tokens=target_tokens[..., :-1],  # audio tokens only
-        target_masks=target_masks[..., :-1],
+        target_tokens=target_tokens[..., 1:],  # Drop codebook 0
+        target_masks=target_masks[..., 1:],
         device=device
     )
-
+    
     return loss
 
 
