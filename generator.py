@@ -583,14 +583,25 @@ def generate_streaming_audio(
     import subprocess
     import torchaudio
     import platform
+    import statistics
+    import datetime
     from threading import Lock
 
     os.environ['OMP_NUM_THREADS'] = '1'
 
+    # Performance tracking variables
+    start_time = time.time()
+    first_frame_time = None
+    first_chunk_time = None
+    first_playback_time = None
+    frame_gen_times = []
+    decode_times = []
+    total_frames = 0
+    total_audio_samples = 0
+
     writer_chunks = []
     audio_ring_buffer = collections.deque()
     stop_event = threading.Event()
-    total_audio_samples = 0
 
     # -- Playback --
     if play_audio:
@@ -599,25 +610,71 @@ def generate_streaming_audio(
             import numpy as np
 
             def playback_worker():
-                stream = sd.OutputStream(samplerate=generator.sample_rate, channels=1, blocksize=2048)
-                stream.start()
-                while not stop_event.is_set() or audio_ring_buffer:
-                    if audio_ring_buffer:
-                        chunk = audio_ring_buffer.popleft()
-                        stream.write(chunk.detach().cpu().numpy())
-                    else:
-                        time.sleep(0.01)
-                stream.write(np.zeros(int(generator.sample_rate * 0.5), dtype=np.float32))
-                stream.stop()
-                stream.close()
+                nonlocal first_playback_time
+                try:
+                    stream = None
+                    stream = sd.OutputStream(
+                        samplerate=generator.sample_rate, 
+                        channels=1, 
+                        blocksize=2048,
+                        dtype='float32'
+                    )
+                    stream.start()
+                    
+                    while not stop_event.is_set() or audio_ring_buffer:
+                        if audio_ring_buffer:
+                            chunk = audio_ring_buffer.popleft()
+                            
+                            # Track first playback time
+                            if first_playback_time is None:
+                                first_playback_time = time.time()
+                                print(f"First audio playback started at {(first_playback_time - start_time) * 1000:.2f}ms")
+                            
+                            # Ensure chunk is a numpy array of float32
+                            chunk_np = chunk.detach().cpu().float().numpy()
+                            
+                            try:
+                                stream.write(chunk_np)
+                            except sd.PortAudioError as e:
+                                print(f"PortAudio error during playback: {e}")
+                                break
+                        else:
+                            time.sleep(0.01)
+                    
+                    # Add a short silence at the end
+                    if stream and stream.active:
+                        silence = np.zeros(int(generator.sample_rate * 0.5), dtype=np.float32)
+                        try:
+                            stream.write(silence)
+                        except Exception as e:
+                            print(f"Error adding final silence: {e}")
+                
+                except Exception as e:
+                    print(f"Unexpected error in playback: {e}")
+                
+                finally:
+                    # Careful stream closure
+                    try:
+                        if stream:
+                            # Stop and close safely
+                            stream.stop()
+                            stream.close()
+                    except Exception as e:
+                        print(f"Error closing audio stream: {e}")
 
             player_thread = threading.Thread(target=playback_worker, daemon=True)
             player_thread.start()
         except ImportError:
             print("Install 'sounddevice' for playback.")
             play_audio = False
+        except Exception as e:
+            print(f"Error setting up audio playback: {e}")
+            play_audio = False
 
-    # -- Chunk writer --
+    
+    if play_audio:
+        player_thread.join(timeout=10.0)
+
     tmp_dir = tempfile.mkdtemp()
     chunk_paths = []
     chunk_idx = 0
@@ -632,13 +689,17 @@ def generate_streaming_audio(
             total_audio_samples += chunk.size(0)
             chunk_idx += 1
 
-    # -- On chunk callback --
     def on_chunk_generated(chunk):
+        nonlocal first_chunk_time
+        # Track first chunk time
+        if first_chunk_time is None:
+            first_chunk_time = time.time()
+            print(f"First audio chunk received at {(first_chunk_time - start_time) * 1000:.2f}ms")
+            print(f"Audio chunk dtype: {chunk.dtype}, shape: {chunk.shape}")
         write_chunk(chunk)
         if play_audio:
             audio_ring_buffer.append(chunk)
 
-    # -- High priority --
     try:
         import psutil
         proc = psutil.Process()
@@ -652,7 +713,35 @@ def generate_streaming_audio(
     print("Generating audio...")
     gen_start = time.time()
 
-    # -- Run model generation only --
+    original_generate_frame = generator._model.generate_frame
+    original_decode = generator._audio_tokenizer.decode
+    
+    def patched_generate_frame(*args, **kwargs):
+        nonlocal first_frame_time, total_frames
+        frame_start = time.time()
+        result = original_generate_frame(*args, **kwargs)
+        frame_time = time.time() - frame_start
+        frame_gen_times.append(frame_time)
+        total_frames += 1
+        
+        # Mark first frame time
+        if first_frame_time is None:
+            first_frame_time = time.time()
+            print(f"First audio frame generated in {(first_frame_time - start_time) * 1000:.2f}ms")
+            
+        return result
+    
+    def patched_decode(*args, **kwargs):
+        decode_start = time.time()
+        result = original_decode(*args, **kwargs)
+        decode_time = time.time() - decode_start
+        decode_times.append(decode_time)
+        return result
+    
+    generator._model.generate_frame = patched_generate_frame
+    generator._audio_tokenizer.decode = patched_decode
+
+    # -- Run model generation --
     for _ in generator.generate_stream(
         text=text,
         speaker=speaker,
@@ -667,10 +756,37 @@ def generate_streaming_audio(
     gen_end = time.time()
     stop_event.set()
 
+    print("===== PERFORMANCE METRICS =====")
+    if frame_gen_times:
+        print("CSM Frame Generation Times:")
+        print(f"Min: {min(frame_gen_times) * 1000:.2f}ms")
+        print(f"Max: {max(frame_gen_times) * 1000:.2f}ms")
+        print(f"Avg: {statistics.mean(frame_gen_times) * 1000:.2f}ms")
+        print(f"Med: {statistics.median(frame_gen_times) * 1000:.2f}ms")
+    
+    if decode_times:
+        print("MIMI Decode Times:")
+        print(f"Min: {min(decode_times) * 1000:.2f}ms")
+        print(f"Max: {max(decode_times) * 1000:.2f}ms")
+        print(f"Avg: {statistics.mean(decode_times) * 1000:.2f}ms")
+        print(f"Med: {statistics.median(decode_times) * 1000:.2f}ms")
+    
+    audio_seconds = total_audio_samples / generator.sample_rate
+    model_time = gen_end - gen_start
+    rtf = audio_seconds / model_time if model_time > 0 else float('inf')
+    inv_rtf = model_time / audio_seconds if audio_seconds > 0 else float('inf')
+    
+    print("Overall Performance:")
+    print(f"Total frames: {total_frames}")
+    print(f"Model + decode time: {model_time:.2f}s for {audio_seconds:.2f}s of audio")
+    print(f"Real-time factor: {rtf:.2f}x (RTF)")
+    print(f"Compute time per audio second: {inv_rtf:.3f}s (target < 1.0)")
+    print("===============================")
+
     if play_audio:
+        print("Waiting for playback to complete...")
         player_thread.join(timeout=3.0)
 
-    # -- Combine audio chunks using ffmpeg or fallback --
     output_path_list = os.path.join(tmp_dir, "file_list.txt")
     with open(output_path_list, "w") as f:
         for path in chunk_paths:
@@ -697,13 +813,22 @@ def generate_streaming_audio(
     except:
         pass
 
-    audio_seconds = total_audio_samples / generator.sample_rate
-    model_time = gen_end - gen_start
-    rtf = audio_seconds / model_time if model_time > 0 else float('inf')
-    inv_rtf = model_time / audio_seconds if audio_seconds > 0 else float('inf')
-
-    print("Audio generation done")
+    print("Saving final audio file...")
+    print("===== TIMING METRICS =====")
+    if first_chunk_time is not None:
+        print(f"Time to first audio chunk: {(first_chunk_time - start_time) * 1000:.2f}ms")
+    if first_playback_time is not None:
+        print(f"Time to first playback: {(first_playback_time - start_time) * 1000:.2f}ms")
+    
     print(f"Model generation time: {model_time:.2f}s for {audio_seconds:.2f}s of audio")
     print(f"Real-time factor: {rtf:.2f}x (RTF)")
     print(f"Compute time per audio second: {inv_rtf:.3f}s (target < 1.0)")
-
+    print("==========================")
+    
+    print(f"Saved audio to: {output_file}")
+    total_time = time.time() - start_time
+    print(f"Total execution time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+    print(f"Script completed at: {datetime.datetime.now().strftime('%H:%M:%S')}")
+    
+    generator._model.generate_frame = original_generate_frame
+    generator._audio_tokenizer.decode = original_decode
