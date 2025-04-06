@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Union
+import time
 
 import torch
 import torchaudio
@@ -114,9 +115,27 @@ class Generator:
         max_audio_length_ms: float = 90_000,
         temperature: float = 0.9,
         topk: int = 50,
-    ) -> torch.Tensor:
+        return_timers: bool = False,
+        disable_watermark: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]]]:
+        """
+        Generates audio based on text, speaker, and context.
+
+        Args:
+            ... (other args) ...
+            return_timers: If True, returns a dictionary with timing information.
+            disable_watermark: If True, skips the watermarking step.
+
+        Returns:
+            Generated audio tensor, or (audio tensor, timers dict) if return_timers is True.
+        """
         self._model.reset_caches()
 
+        timers: Dict[str, Union[float, List[float]]] = {}
+        start_total = time.time() if return_timers else None
+
+        # --- Tokenization ---
+        start_tokenize = time.time() if return_timers else None
         max_generation_len = int(max_audio_length_ms / 80)
         tokens, tokens_mask = [], []
         for segment in context:
@@ -130,23 +149,31 @@ class Generator:
 
         prompt_tokens = torch.cat(tokens, dim=0).long().to(self.device)
         prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool().to(self.device)
+        if return_timers: timers["tokenization"] = time.time() - start_tokenize
 
+        start_generation = time.time() if return_timers else None
         samples = []
+        frame_times = []
         curr_tokens = prompt_tokens.unsqueeze(0)
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        max_seq_len = 2048
+        max_seq_len = getattr(self._model.backbone, 'max_seq_len', 2048)
         max_context_len = max_seq_len - max_generation_len
         if curr_tokens.size(1) >= max_context_len:
             raise ValueError(
-                f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
+                f"Input context length ({curr_tokens.size(1)}) exceeds maximum "
+                f"allowed ({max_context_len} = {max_seq_len} - {max_generation_len}). "
+                f"Reduce context or increase max_audio_length_ms."
             )
 
-        for _ in range(max_generation_len):
+        for i in range(max_generation_len):
+            frame_start = time.time() if return_timers else None
             sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+            if return_timers: frame_times.append(time.time() - frame_start)
             if torch.all(sample == 0):
-                break  # eos
+                if return_timers: print(f"EOS token detected at frame {i+1}.")
+                break
 
             samples.append(sample)
 
@@ -155,22 +182,58 @@ class Generator:
                 [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
             ).unsqueeze(1)
             curr_pos = curr_pos[:, -1:] + 1
+            if curr_pos[0, -1] >= max_seq_len:
+                print(f"Warning: Reached maximum sequence length ({max_seq_len}) during generation.")
+                break
 
-        audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
+        if return_timers:
+            timers["generation"] = time.time() - start_generation
+            timers["frame_times"] = frame_times
+            timers["num_frames"] = len(samples)
 
-        # This applies an imperceptible watermark to identify audio as AI-generated.
-        # Watermarking ensures transparency, dissuades misuse, and enables traceability.
-        # Please be a responsible AI citizen and keep the watermarking in place.
-        # If using CSM 1B in another application, use your own private key and keep it secret.
-        audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
-        audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+        # --- Audio Decoding ---
+        if not samples:
+            print("Warning: No audio samples generated.")
+            audio = torch.empty((0,), dtype=torch.float32, device=self.device)
+            if return_timers: timers["audio_decoding"] = 0.0
+        else:
+            start_decode = time.time() if return_timers else None
+            stacked_samples = torch.stack(samples).permute(1, 2, 0)
+            audio = self._audio_tokenizer.decode(stacked_samples).squeeze(0).squeeze(0)
+            if return_timers: timers["audio_decoding"] = time.time() - start_decode
 
-        return audio
+        # --- Watermarking (Optional) ---
+        if not disable_watermark and self._watermarker is not None:
+            start_watermark = time.time() if return_timers else None
+            try:
+                audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
+                if wm_sample_rate != self.sample_rate:
+                    audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+                if return_timers: timers["watermarking"] = time.time() - start_watermark
+            except Exception as e:
+                print(f"Warning: Watermarking failed - {e}")
+                if return_timers: timers["watermarking"] = -1.0
+
+        if return_timers:
+            timers["total"] = time.time() - start_total
+            return audio.detach(), timers
+        else:
+            return audio.detach()
 
 
 def load_csm_1b(device: str = "cuda") -> Generator:
+    print("Loading model...")
     model = Model.from_pretrained("sesame/csm-1b")
     model.to(device=device, dtype=torch.bfloat16)
+    model.eval()
+
+    print("Compiling model (mode='max-autotune', fullgraph=True)...")
+    compile_start = time.time()
+    try:
+        model = torch.compile(model, mode="max-autotune", fullgraph=True, cudagraphs=True)
+        print(f"Model compiled successfully in {time.time() - compile_start:.2f} seconds.")
+    except Exception as e:
+        print(f"Model compilation failed: {e}. Performance may be suboptimal.")
 
     generator = Generator(model)
     return generator

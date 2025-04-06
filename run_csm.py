@@ -5,8 +5,8 @@ from huggingface_hub import hf_hub_download
 from generator import load_csm_1b, Segment
 from dataclasses import dataclass
 
-# Disable Triton compilation
-os.environ["NO_TORCH_COMPILE"] = "1"
+# Disable Triton compilation - REMOVED
+# os.environ["NO_TORCH_COMPILE"] = "1"
 
 # Default prompts are available at https://hf.co/sesame/csm-1b
 prompt_filepath_conversational_a = hf_hub_download(
@@ -96,22 +96,30 @@ def main():
 
     for utterance in conversation:
         print(f"Generating: {utterance['text']}")
+        start_time = torch.cuda.Event(enable_timing=True)
+        end_time = torch.cuda.Event(enable_timing=True)
+
+        start_time.record()
         audio_tensor = generator.generate(
             text=utterance['text'],
             speaker=utterance['speaker_id'],
             context=prompt_segments + generated_segments,
             max_audio_length_ms=10_000,
         )
+        end_time.record()
+        torch.cuda.synchronize()
+        print(f"Generation took: {start_time.elapsed_time(end_time):.2f} ms")
+
         generated_segments.append(Segment(text=utterance['text'], speaker=utterance['speaker_id'], audio=audio_tensor))
 
     # Concatenate all generations
     all_audio = torch.cat([seg.audio for seg in generated_segments], dim=0)
     torchaudio.save(
-        "full_conversation.wav",
+        "full_conversation_compiled.wav", # Save to a different file
         all_audio.unsqueeze(0).cpu(),
         generator.sample_rate
     )
-    print("Successfully generated full_conversation.wav")
+    print("Successfully generated full_conversation_compiled.wav")
 
 if __name__ == "__main__":
     main() 
