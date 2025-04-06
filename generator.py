@@ -13,6 +13,22 @@ from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 
+# Advanced CUDA optimizations
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.enabled = True
+torch.cuda.empty_cache()
+
+# Windows-specific optimizations (keep your existing ones too)
+if os.name == 'nt':
+    torch._inductor.config.triton.cudagraphs = False
+    torch._inductor.config.conv_1x1_as_mm = True
+    
+# Thread optimization
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+torch.set_num_threads(1)
 
 @dataclass
 class Segment:
