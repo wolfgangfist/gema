@@ -138,6 +138,9 @@ class Generator:
         topk: int = 30,
         on_chunk_generated: Optional[Callable[[torch.Tensor], None]] = None,
     ) -> PyGenerator[torch.Tensor, None, None]:
+        import threading
+        import queue
+
         if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
@@ -169,77 +172,91 @@ class Generator:
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        frame_buffer = []
+        frame_queue = queue.Queue()
+        audio_queue = queue.Queue()
+        stop_event = threading.Event()
+        decode_stride = 60
+        batch_rollout = 8  # how many frames to rollout at once
         i = 0
 
-        if torch.cuda.is_available():
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
+        @torch.inference_mode()
+        def decode_worker():
+            frame_buffer = []
+            while not stop_event.is_set() or not frame_queue.empty():
+                try:
+                    sample = frame_queue.get(timeout=0.1)
+                    if sample is None:
+                        break
+                    frame_buffer.append(sample)
+                    if len(frame_buffer) >= decode_stride:
+                        audio_chunk = self._audio_tokenizer.decode(
+                            torch.stack(frame_buffer).permute(1, 2, 0)
+                        ).squeeze(0).squeeze(0)
+                        frame_buffer.clear()
+                        audio_queue.put(audio_chunk.detach().cpu())
+                except queue.Empty:
+                    continue
 
-        zeros_1_1 = torch.zeros(1, 1, dtype=torch.long, device=self.device)
-        zeros_mask_1_1 = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
+            if frame_buffer:
+                audio_chunk = self._audio_tokenizer.decode(
+                    torch.stack(frame_buffer).permute(1, 2, 0)
+                ).squeeze(0).squeeze(0)
+                audio_queue.put(audio_chunk.detach().cpu())
 
-        update_tokens = lambda s: (
-            torch.cat([s, zeros_1_1], dim=1).unsqueeze(1),
-            torch.cat([torch.ones_like(s, dtype=torch.bool), zeros_mask_1_1], dim=1).unsqueeze(1),
-            curr_pos[:, -1:] + 1,
-        )
+        decode_thread = threading.Thread(target=decode_worker, daemon=True)
+        decode_thread.start()
+
+        print("Starting threaded streaming generation...")
+        generation_start = time.time()
 
         with self._audio_tokenizer.streaming(1):
-            generation_start = time.time()
+            zeros_1_1 = torch.zeros(1, 1, dtype=torch.long, device=self.device)
+            zeros_mask_1_1 = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
 
             while i < max_generation_len:
-                batch_end = min(i + 30, max_generation_len)
-                batch_size_actual = batch_end - i
+                actual_rollout = min(batch_rollout, max_generation_len - i)
                 batch_samples = []
 
-                for _ in range(batch_size_actual):
-                    with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                for _ in range(actual_rollout):
+                    with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16), torch.no_grad():
                         sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-
                     if torch.all(sample == 0):
                         break
-
                     batch_samples.append(sample)
-                    curr_tokens, curr_tokens_mask, curr_pos = update_tokens(sample)
+
+                    # Update in-place
+                    curr_tokens = torch.cat([sample, zeros_1_1], dim=1).unsqueeze(1)
+                    curr_tokens_mask = torch.cat(
+                        [torch.ones_like(sample, dtype=torch.bool), zeros_mask_1_1], dim=1
+                    ).unsqueeze(1)
+                    curr_pos = curr_pos[:, -1:] + 1
 
                 if not batch_samples:
                     break
 
-                frame_buffer.extend(batch_samples)
+                for s in batch_samples:
+                    frame_queue.put(s)
                 i += len(batch_samples)
 
-                if len(frame_buffer) >= self._stream_buffer_size:
-                    audio_chunk = self._decode_frames(frame_buffer)
-                    frame_buffer = []
-                    if on_chunk_generated:
-                        cpu_chunk = audio_chunk.cpu()
-                        on_chunk_generated(cpu_chunk)
-                        yield cpu_chunk
-                    else:
-                        yield audio_chunk.cpu()
+        stop_event.set()
+        frame_queue.put(None)
+        decode_thread.join(timeout=5.0)
 
-            if frame_buffer:
-                audio_chunk = self._decode_frames(frame_buffer)
-                cpu_chunk = audio_chunk.cpu()
-                if on_chunk_generated:
-                    on_chunk_generated(cpu_chunk)
-                yield cpu_chunk
+        while not audio_queue.empty():
+            chunk = audio_queue.get()
+            if on_chunk_generated:
+                on_chunk_generated(chunk)
+            yield chunk
 
-            if torch.cuda.is_available():
-                end_event.record()
-                torch.cuda.synchronize()
-                gpu_time = start_event.elapsed_time(end_event) / 1000.0
-                total_time = time.time() - generation_start
-                audio_seconds = i * 0.08
-                rtf = audio_seconds / total_time if total_time > 0 else float('inf')
-                inv_rtf = total_time / audio_seconds if audio_seconds > 0 else float('inf')
+        total_time = time.time() - generation_start
+        audio_seconds = i * 0.08
+        rtf = audio_seconds / total_time if total_time > 0 else float('inf')
+        inv_rtf = total_time / audio_seconds if audio_seconds > 0 else float('inf')
 
-                print(f"Generation time: {total_time:.2f}s for {audio_seconds:.2f}s of audio")
-                print(f"Speed: {rtf:.2f}x realtime (RTF)")
-                print(f"Compute time per audio second: {inv_rtf:.3f}s (target: <1.0)")
-
+        print("Threaded audio generation complete")
+        print(f"Model + decode time: {total_time:.2f}s for {audio_seconds:.2f}s of audio")
+        print(f"Real-time factor: {rtf:.2f}x (RTF)")
+        print(f"Compute time per audio second: {inv_rtf:.3f}s (target < 1.0)")
 
 
     @torch.inference_mode()
@@ -571,7 +588,7 @@ def generate_streaming_audio(
                 while not stop_event.is_set() or audio_ring_buffer:
                     if audio_ring_buffer:
                         chunk = audio_ring_buffer.popleft()
-                        stream.write(chunk.cpu().numpy())
+                        stream.write(chunk.detach().cpu().numpy())
                     else:
                         time.sleep(0.01)
                 stream.write(np.zeros(int(generator.sample_rate * 0.5), dtype=np.float32))
@@ -594,7 +611,7 @@ def generate_streaming_audio(
         nonlocal chunk_idx, total_audio_samples
         with writer_lock:
             chunk_path = os.path.join(tmp_dir, f"chunk_{chunk_idx}.wav")
-            torchaudio.save(chunk_path, chunk.unsqueeze(0).cpu(), generator.sample_rate)
+            torchaudio.save(chunk_path, chunk.unsqueeze(0).detach().cpu(), generator.sample_rate)
             chunk_paths.append(chunk_path)
             total_audio_samples += chunk.size(0)
             chunk_idx += 1
@@ -616,7 +633,7 @@ def generate_streaming_audio(
     except Exception:
         pass
 
-    print("🔊 Generating audio...")
+    print("Generating audio...")
     gen_start = time.time()
 
     # -- Run model generation only --
@@ -650,26 +667,27 @@ def generate_streaming_audio(
             "-c", "copy", output_file
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
-        # fallback manually
         full_audio = torch.cat(writer_chunks)
         torchaudio.save(output_file, full_audio.unsqueeze(0).cpu(), generator.sample_rate)
 
-    # Clean up temp files
     for path in chunk_paths:
-        try: os.remove(path)
-        except: pass
+        try:
+            os.remove(path)
+        except:
+            pass
     try:
         os.remove(output_path_list)
         os.rmdir(tmp_dir)
-    except: pass
+    except:
+        pass
 
-    # -- Metrics --
     audio_seconds = total_audio_samples / generator.sample_rate
     model_time = gen_end - gen_start
     rtf = audio_seconds / model_time if model_time > 0 else float('inf')
     inv_rtf = model_time / audio_seconds if audio_seconds > 0 else float('inf')
 
-    print(f"\nAudio generation done")
+    print("Audio generation done")
     print(f"Model generation time: {model_time:.2f}s for {audio_seconds:.2f}s of audio")
     print(f"Real-time factor: {rtf:.2f}x (RTF)")
     print(f"Compute time per audio second: {inv_rtf:.3f}s (target < 1.0)")
+
