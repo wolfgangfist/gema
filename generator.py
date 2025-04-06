@@ -20,7 +20,7 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.enabled = True
 torch.cuda.empty_cache()
 
-# Windows-specific optimizations (keep your existing ones too)
+# Windows-specific optimizations
 if os.name == 'nt':
     torch._inductor.config.triton.cudagraphs = False
     torch._inductor.config.conv_1x1_as_mm = True
