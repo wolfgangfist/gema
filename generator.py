@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Union, Generator
 import time
+import os
 
 import torch
 import torchaudio
@@ -9,7 +10,8 @@ from models import Model
 from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
-from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+
+os.environ["NO_TORCH_COMPILE"] = "1"
 
 
 @dataclass
@@ -53,25 +55,32 @@ class Generator:
         mimi.set_num_codebooks(32)
         self._audio_tokenizer = mimi
 
-        self._watermarker = load_watermarker(device=device)
-
         self.sample_rate = mimi.sample_rate
         self.device = device
+        
+        # Cache for tokenized prompts
+        self._prompt_cache = {}
 
     def _tokenize_text_segment(self, text: str, speaker: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        cache_key = (text, speaker)
+        if cache_key in self._prompt_cache:
+            return self._prompt_cache[cache_key]
+
         frame_tokens = []
         frame_masks = []
 
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
-        text_frame = torch.zeros(len(text_tokens), 33).long()
-        text_frame_mask = torch.zeros(len(text_tokens), 33).bool()
-        text_frame[:, -1] = torch.tensor(text_tokens)
+        text_frame = torch.zeros(len(text_tokens), 33, device=self.device).long()
+        text_frame_mask = torch.zeros(len(text_tokens), 33, device=self.device).bool()
+        text_frame[:, -1] = torch.tensor(text_tokens, device=self.device)
         text_frame_mask[:, -1] = True
 
-        frame_tokens.append(text_frame.to(self.device))
-        frame_masks.append(text_frame_mask.to(self.device))
+        frame_tokens.append(text_frame)
+        frame_masks.append(text_frame_mask)
 
-        return torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0)
+        result = (torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0))
+        self._prompt_cache[cache_key] = result
+        return result
 
     def _tokenize_audio(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         assert audio.ndim == 1, "Audio must be single channel"
@@ -79,15 +88,15 @@ class Generator:
         frame_tokens = []
         frame_masks = []
 
-        # (K, T)
+        # Keep audio on device
         audio = audio.to(self.device)
         audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
         # add EOS frame
-        eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
+        eos_frame = torch.zeros(audio_tokens.size(0), 1, device=self.device)
         audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
 
-        audio_frame = torch.zeros(audio_tokens.size(1), 33).long().to(self.device)
-        audio_frame_mask = torch.zeros(audio_tokens.size(1), 33).bool().to(self.device)
+        audio_frame = torch.zeros(audio_tokens.size(1), 33, device=self.device).long()
+        audio_frame_mask = torch.zeros(audio_tokens.size(1), 33, device=self.device).bool()
         audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
         audio_frame_mask[:, :-1] = True
 
@@ -115,39 +124,14 @@ class Generator:
         max_audio_length_ms: float = 90_000,
         temperature: float = 0.9,
         topk: int = 50,
-        return_timers: bool = False,
-        disable_watermark: bool = False,
-        stream: bool = False,
-        stream_chunk_frames: int = 25,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]], Generator[torch.Tensor, None, None]]:
-        """
-        Generates audio based on text, speaker, and context.
-
-        Args:
-            text (str): Input text to generate audio from.
-            speaker (int): Speaker ID.
-            context (List[Segment]): Contextual segments for generation.
-            max_audio_length_ms (float): Maximum audio length in milliseconds (default: 90,000).
-            temperature (float): Sampling temperature (default: 0.9).
-            topk (int): Top-k sampling parameter (default: 50).
-            return_timers (bool): If True, returns timing info with audio (ignored when stream=True).
-            disable_watermark (bool): If True, skips watermarking (watermarking skipped when stream=True).
-            stream (bool): If True, yields audio chunks incrementally as a generator (default: False).
-            stream_chunk_frames (int): Number of frames per audio chunk when streaming (default: 25, ~2s).
-
-        Returns:
-            - If stream=False and return_timers=False: torch.Tensor (full audio).
-            - If stream=False and return_timers=True: Tuple[torch.Tensor, Dict[str, float]] (audio, timers).
-            - If stream=True: Generator yielding torch.Tensor (audio chunks).
-        """
+    ) -> torch.Tensor:
+        """Generate audio from text."""
         self._model.reset_caches()
-        timers: Dict[str, Union[float, List[float]]] = {}
 
-        # --- Tokenization ---
-        start_total = time.time() if return_timers and not stream else None
-        start_tokenize = time.time() if return_timers and not stream else None
         max_generation_len = int(max_audio_length_ms / 80)
         tokens, tokens_mask = [], []
+
+        # Pre-allocate tensors for generation
         for segment in context:
             segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
             tokens.append(segment_tokens)
@@ -157,147 +141,65 @@ class Generator:
         tokens.append(gen_segment_tokens)
         tokens_mask.append(gen_segment_tokens_mask)
 
-        prompt_tokens = torch.cat(tokens, dim=0).long().to(self.device)
-        prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool().to(self.device)
-        if return_timers and not stream:
-            timers["tokenization"] = time.time() - start_tokenize
+        prompt_tokens = torch.cat(tokens, dim=0).long()  # Already on device from tokenization
+        prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool()  # Already on device
 
-        # --- Generation Setup ---
         samples = []
         curr_tokens = prompt_tokens.unsqueeze(0)
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
-        curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
-        max_seq_len = getattr(self._model.backbone, 'max_seq_len', 2048)
+        curr_pos = torch.arange(0, prompt_tokens.size(0), device=self.device).unsqueeze(0).long()
+
+        max_seq_len = 2048
         max_context_len = max_seq_len - max_generation_len
         if curr_tokens.size(1) >= max_context_len:
             raise ValueError(
-                f"Input context length ({curr_tokens.size(1)}) exceeds maximum "
-                f"allowed ({max_context_len} = {max_seq_len} - {max_generation_len}). "
-                f"Reduce context or increase max_audio_length_ms."
+                f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
             )
 
-        if stream:
-            # --- Streaming Mode ---
+        # Pre-allocate tensors for frame generation
+        zeros_1_1 = torch.zeros(1, 1, device=self.device).long()
+        zeros_1_1_bool = torch.zeros(1, 1, device=self.device).bool()
 
-            decoded_up_to = 0
-            samples = []
-            max_seq_len = getattr(self._model.backbone, 'max_seq_len', 2048)
+        for _ in range(max_generation_len):
+            sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+            if torch.all(sample == 0):
+                break  # eos
 
-            for i in range(max_generation_len):
-                sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-                samples.append(sample)
+            samples.append(sample)
 
-                eos_detected = torch.all(sample == 0)
+            # Use pre-allocated tensors and avoid unnecessary concatenations
+            curr_tokens = torch.cat([sample, zeros_1_1], dim=1).unsqueeze(1)
+            curr_tokens_mask = torch.cat(
+                [torch.ones_like(sample, dtype=torch.bool), zeros_1_1_bool], dim=1
+            ).unsqueeze(1)
+            curr_pos = curr_pos[:, -1:] + 1
 
-                current_num_samples = len(samples)
-                if current_num_samples >= decoded_up_to + stream_chunk_frames:
-                    frames_to_decode = samples[decoded_up_to : decoded_up_to + stream_chunk_frames]
-                    stacked_chunk = torch.stack(frames_to_decode).permute(1, 2, 0)
-                    chunk_audio = self._audio_tokenizer.decode(stacked_chunk).squeeze(0).squeeze(0)
-                    yield chunk_audio
-                    decoded_up_to += stream_chunk_frames
-
-                if eos_detected:
-                    if decoded_up_to < current_num_samples:
-                         print(f"EOS detected at frame {i+1}. Will decode final partial chunk after loop.")
-                    else:
-                         print(f"EOS detected at frame {i+1}. No final partial chunk to decode.")
-                    break
-
-                curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
-                curr_tokens_mask = torch.cat(
-                    [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
-                ).unsqueeze(1)
-                curr_pos = curr_pos[:, -1:] + 1
-                if curr_pos[0, -1] >= max_seq_len:
-                    print(f"Warning: Reached maximum sequence length ({max_seq_len}) during generation.")
-                    if decoded_up_to < current_num_samples:
-                         print(f"Max sequence length reached. Will decode final partial chunk after loop.")
-                    break
-
-            if decoded_up_to < len(samples):
-                print(f"Decoding final {len(samples) - decoded_up_to} frames.")
-                final_frames_to_decode = samples[decoded_up_to:]
-                stacked_chunk = torch.stack(final_frames_to_decode).permute(1, 2, 0)
-                chunk_audio = self._audio_tokenizer.decode(stacked_chunk).squeeze(0).squeeze(0)
-                yield chunk_audio
-            elif not samples:
-                 print("Warning: No samples generated in streaming mode.")
-
+        # Stack all samples at once
+        if samples:
+            stacked_samples = torch.stack(samples).permute(1, 2, 0)
+            audio = self._audio_tokenizer.decode(stacked_samples).squeeze(0).squeeze(0)
+            return audio
         else:
-            # --- Non-Streaming Mode ---
-            start_generation = time.time() if return_timers else None
-            frame_times = [] if return_timers else None
-            for i in range(max_generation_len):
-                frame_start = time.time() if return_timers else None
-                sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-                if return_timers:
-                    frame_times.append(time.time() - frame_start) # type: ignore
-
-                eos_detected = torch.all(sample == 0)
-                if eos_detected:
-                    if return_timers:
-                        print(f"EOS token detected at frame {i+1}.")
-                    break
-                samples.append(sample)
-
-                curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
-                curr_tokens_mask = torch.cat(
-                    [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
-                ).unsqueeze(1)
-                curr_pos = curr_pos[:, -1:] + 1
-                if curr_pos[0, -1] >= max_seq_len:
-                    print(f"Warning: Reached maximum sequence length ({max_seq_len}) during generation.")
-                    break
-
-            if return_timers:
-                timers["generation"] = time.time() - start_generation
-                timers["frame_times"] = frame_times # type: ignore
-                timers["num_frames"] = len(samples)
-
-            # --- Audio Decoding ---
-            if not samples:
-                print("Warning: No audio samples generated.")
-                audio = torch.empty((0,), dtype=torch.float32, device=self.device)
-                if return_timers: timers["audio_decoding"] = 0.0
-            else:
-                start_decode = time.time() if return_timers else None
-                stacked_samples = torch.stack(samples).permute(1, 2, 0)
-                audio = self._audio_tokenizer.decode(stacked_samples).squeeze(0).squeeze(0)
-                if return_timers: timers["audio_decoding"] = time.time() - start_decode
-
-            # --- Watermarking (Optional) ---
-            if not disable_watermark and self._watermarker is not None:
-                start_watermark = time.time() if return_timers else None
-                try:
-                    audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
-                    if wm_sample_rate != self.sample_rate:
-                        audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
-                    if return_timers: timers["watermarking"] = time.time() - start_watermark
-                except Exception as e:
-                    print(f"Warning: Watermarking failed - {e}")
-                    if return_timers: timers["watermarking"] = -1.0 # type: ignore
-
-            if return_timers:
-                timers["total"] = time.time() - start_total # type: ignore
-                return audio.detach(), timers
-            else:
-                return audio.detach()
+            return torch.zeros(1, device=self.device)  # Return empty audio if no samples
 
 
 def load_csm_1b(device: str = "cuda") -> Generator:
-    print("Loading model...")
+    print("Loading CSM-1B model...")
     model = Model.from_pretrained("sesame/csm-1b")
     model.to(device=device, dtype=torch.bfloat16)
     model.eval()
 
-    print("Compiling model (mode='max-autotune', fullgraph=True)...")
-    compile_start = time.time()
-    try:
-        model = torch.compile(model, mode="max-autotune", fullgraph=True)
-        print(f"Model compiled successfully in {time.time() - compile_start:.2f} seconds.")
-    except Exception as e:
-        print(f"Model compilation failed: {e}. Performance may be suboptimal.")
+    if os.environ.get("NO_TORCH_COMPILE", "0") == "1":
+        print("Skipping torch.compile based on NO_TORCH_COMPILE environment variable.")
+    else:
+        print("Compiling model with basic mode...")
+        compile_start = time.time()
+        try:
+            # Use basic mode instead of max-autotune to avoid Triton issues
+            model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+            print(f"Model compiled successfully in {time.time() - compile_start:.2f} seconds.")
+        except Exception as e:
+            print(f"Warning: Model compilation failed: {e}. Continuing without compilation.")
 
     generator = Generator(model)
     return generator
