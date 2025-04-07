@@ -33,12 +33,12 @@ def load_checkpoint_and_merge():
 
     print("Applying LoRA structure...")
     from lora import replace_linear_with_lora  # make sure this import matches your file
-    model = replace_linear_with_lora(model, r=8, alpha=16, dropout=0.0)
+    model = replace_linear_with_lora(model, r=128, alpha=128, dropout=0.0)
 
     checkpoint_path = find_latest_checkpoint(OUTPUT_DIR)
     state = torch.load(os.path.join(checkpoint_path, "model.safetensors"), map_location=DEVICE)
 
-    model.load_state_dict(state["model_state_dict"])
+    model.load_state_dict(state["model_state_dict"], strict=False)
 
     print("Merging LoRA weights into base model...")
     merge_lora_weights(model)

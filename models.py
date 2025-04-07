@@ -117,6 +117,9 @@ class Model(
         self.codebook0_head = nn.Linear(backbone_dim, config.audio_vocab_size, bias=False)
         self.audio_head = nn.Parameter(torch.empty(config.audio_num_codebooks - 1, decoder_dim, config.audio_vocab_size))
 
+    def forward(self, tokens, masks, pos):
+        return self.generate_frame(tokens, masks, pos, temperature=1.0, topk=70)
+
     def setup_caches(self, max_batch_size: int) -> torch.Tensor:
         """Setup KV caches and return a causal mask."""
         dtype = next(self.parameters()).dtype

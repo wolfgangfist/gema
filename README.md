@@ -24,6 +24,7 @@ git clone git@github.com:davidbrowne17/csm-streaming.git
 cd csm-streaming
 python3.10 -m venv .venv
 source .venv/bin/activate
+pip install llama-cpp-python==0.3.4 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 # Replace with your cuda version
 pip install -r requirements.txt
 pip install sounddevice  # Optional: for real-time audio playback
 

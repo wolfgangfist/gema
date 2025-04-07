@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Companion</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* Removed fixed heights and overflow: hidden for a dynamic layout */
+    html, body {
+      margin: 0;
+      padding: 0;
+    }
+    
+    /* Optional: if you still want to animate the button */
+    .pulse {
+      animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.7);
+      }
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(255, 71, 87, 0);
+      }
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(255, 71, 87, 0);
+      }
+    }
+    
+    .waveform {
+      height: 60px;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .waveform span {
+      display: inline-block;
+      width: 3px;
+      margin: 0 1px;
+      background-color: #4f46e5;
+      animation: wave 0.5s infinite ease-in-out alternate;
+      border-radius: 1px;
+    }
+    
+    @keyframes wave {
+      0% { height: 5px; }
+      100% { height: 30px; }
+    }
+    
+    .waveform span:nth-child(2n) {
+      animation-delay: 0.1s;
+    }
+    
+    .waveform span:nth-child(3n) {
+      animation-delay: 0.2s;
+    }
+    
+    .waveform span:nth-child(4n) {
+      animation-delay: 0.3s;
+    }
+    
+    .waveform span:nth-child(5n) {
+      animation-delay: 0.4s;
+    }
+  </style>
+</head>
+<body class="bg-gray-100">
+  <div class="container mx-auto px-4 py-4 min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="mb-4 flex justify-between items-center">
+      <h1 class="text-3xl font-bold text-indigo-700">AI Companion</h1>
+      <button id="settingsBtn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+        </svg>
+        Settings
+      </button>
+    </header>
+    
+    <!-- Main Content -->
+    <div class="main-content flex-grow">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <!-- Conversation Area -->
+        <div class="col-span-3 bg-white rounded-lg shadow-md p-4 flex flex-col">
+          <div class="mb-4 overflow-y-auto" style="max-height: calc(100vh - 16rem);">
+            <div id="conversationHistory" class="space-y-4">
+              <!-- Conversation messages will be added here -->
+            </div>
+          </div>
+          
+          <!-- Audio Controls -->
+          <div class="flex flex-col space-y-4 bg-gray-50 p-4 rounded-lg">
+            <div id="audioWaveform" class="waveform hidden">
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+            </div>
+            
+            <div class="flex justify-between items-center">
+              <div>
+                <button id="micToggleBtn" class="w-16 h-16 rounded-full bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  </svg>
+                </button>
+                <span id="micStatus" class="block text-sm text-center mt-2 text-gray-600">Click to speak</span>
+              </div>
+              
+              <div>
+                <button id="interruptBtn" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition hidden">
+                  Interrupt
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Status Panel -->
+        <div class="col-span-1 bg-white rounded-lg shadow-md p-4 flex flex-col">
+          <h2 class="text-xl font-semibold mb-4 text-indigo-700">Status</h2>
+          
+          <div class="space-y-6 flex-grow overflow-y-auto">
+            <div>
+              <h3 class="text-lg font-medium mb-2">System</h3>
+              <div class="space-y-2">
+                <div class="flex justify-between">
+                  <span class="text-gray-600">Connection:</span>
+                  <span id="connectionStatus" class="font-medium text-yellow-500">Connecting...</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-gray-600">Models:</span>
+                  <span id="modelStatus" class="font-medium text-yellow-500">Not Loaded</span>
+                </div>
+              </div>
+            </div>
+            
+            <div>
+              <h3 class="text-lg font-medium mb-2">Session</h3>
+              <div class="space-y-2">
+                <div class="flex justify-between">
+                  <span class="text-gray-600">Duration:</span>
+                  <span id="sessionDuration" class="font-medium">00:00:00</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-gray-600">Messages:</span>
+                  <span id="messageCount" class="font-medium">0</span>
+                </div>
+              </div>
+            </div>
+            
+            <div>
+              <h3 class="text-lg font-medium mb-2">Audio</h3>
+              <canvas id="audioLevels" height="100"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-2xl max-h-screen overflow-y-auto">
+      <div class="flex justify-between items-center mb-6">
+        <h2 class="text-2xl font-bold text-indigo-700">Companion Settings</h2>
+        <button id="closeSettingsBtn" class="text-gray-500 hover:text-gray-700">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      
+      <div class="space-y-6">
+        <div>
+          <label for="systemPrompt" class="block text-sm font-medium text-gray-700 mb-1">System Prompt</label>
+          <textarea id="systemPrompt" rows="4" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">You are a helpful AI companion with a friendly voice. Engage in natural conversations with the user, answer their questions, and be helpful.</textarea>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label for="referenceAudioPath" class="block text-sm font-medium text-gray-700 mb-1">Reference Audio Path</label>
+            <input type="text" id="referenceAudioPath" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Path to reference audio file" value="./reference.wav">
+          </div>
+          
+          <div>
+            <label for="referenceText" class="block text-sm font-medium text-gray-700 mb-1">Reference Text</label>
+            <input type="text" id="referenceText" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Text matching reference audio" value="Hello, I'm your AI companion. How can I help you today?">
+          </div>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label for="modelPath" class="block text-sm font-medium text-gray-700 mb-1">Voice Model Path</label>
+            <input type="text" id="modelPath" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Path to voice model" value="./finetuned_model/">
+          </div>
+          
+          <div>
+            <label for="llmPath" class="block text-sm font-medium text-gray-700 mb-1">LLM Path (GGUF)</label>
+            <input type="text" id="llmPath" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Path to GGUF model" value="./models/llama3-8b-instruct.gguf">
+          </div>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label for="maxTokens" class="block text-sm font-medium text-gray-700 mb-1">Max Tokens</label>
+            <input type="number" id="maxTokens" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" value="8192" min="1024" max="32768">
+          </div>
+          
+          <div>
+            <label for="speakerId" class="block text-sm font-medium text-gray-700 mb-1">Voice Speaker ID</label>
+            <input type="number" id="speakerId" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" value="0" min="0" max="10">
+          </div>
+        </div>
+        
+        <div class="col-span-2 border-t pt-4 mt-2">
+          <h3 class="text-lg font-medium mb-3 text-indigo-700">Voice Activity Detection</h3>
+          <div class="flex items-center justify-between">
+            <div class="flex items-center">
+              <input type="checkbox" id="vadEnabled" class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" checked>
+              <label for="vadEnabled" class="ml-2 block text-sm text-gray-700">Enable automatic turn detection</label>
+            </div>
+            <div class="w-1/2">
+              <label for="vadThreshold" class="block text-sm font-medium text-gray-700 mb-1">Sensitivity</label>
+              <input type="range" id="vadThreshold" class="w-full" min="0.1" max="0.9" step="0.05" value="0.5">
+              <div class="flex justify-between text-xs text-gray-500">
+                <span>Less sensitive</span>
+                <span id="vadThresholdValue">0.5</span>
+                <span>More sensitive</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="col-span-2 border-t pt-4 mt-2">
+          <h3 class="text-lg font-medium mb-3 text-indigo-700">Enhanced RAG Settings</h3>
+          <div>
+            <label for="embeddingModel" class="block text-sm font-medium text-gray-700 mb-1">Embedding Model</label>
+            <select id="embeddingModel" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="all-MiniLM-L6-v2">all-MiniLM-L6-v2 (Fast)</option>
+              <option value="all-mpnet-base-v2">all-mpnet-base-v2 (Balanced)</option>
+              <option value="multi-qa-mpnet-base-dot-v1">multi-qa-mpnet-base-dot-v1 (Best for Q&A)</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="flex justify-end pt-4">
+          <button id="saveSettingsBtn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+            Save & Initialize
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // Global variables
+    const SESSION_ID = Date.now().toString();
+    let ws = null;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let isRecording = false;
+    let isSpeaking = false;
+    let sessionStartTime = null;
+    let messageCount = 0;
+    let audioContext = null;
+    let analyzer = null;
+    let micStream = null;
+    let audioLevelsChart = null;
+    
+    // Setup WebSocket connection
+    const connectWebSocket = () => {
+      if (ws) {
+        ws.close();
+      }
+      
+      const connectionStatus = document.getElementById('connectionStatus');
+      connectionStatus.textContent = 'Connecting...';
+      connectionStatus.className = 'font-medium text-yellow-500';
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      console.log(`Connecting to WebSocket at ${wsUrl}`);
+      
+      ws = new WebSocket(wsUrl);
+      
+      ws.onopen = () => {
+        console.log('WebSocket connection established');
+        connectionStatus.textContent = 'Connected';
+        connectionStatus.className = 'font-medium text-green-500';
+        
+        if (!sessionStartTime) {
+          document.getElementById('settingsModal').classList.remove('hidden');
+        }
+      };
+      
+      ws.onclose = (event) => {
+        console.log(`WebSocket closed with code: ${event.code}`);
+        connectionStatus.textContent = 'Disconnected';
+        connectionStatus.className = 'font-medium text-red-500';
+        setTimeout(connectWebSocket, 5000);
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        connectionStatus.textContent = 'Error';
+        connectionStatus.className = 'font-medium text-red-500';
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log('Received message:', data);
+          handleWebSocketMessage(data);
+        } catch (error) {
+          console.error('Error parsing message:', error);
+        }
+      };
+    };
+    
+    const handleWebSocketMessage = (data) => {
+      switch(data.type) {
+        case 'status':
+          console.log('Status update:', data.message);
+          const modelStatus = document.getElementById('modelStatus');
+          if (data.message === 'Models initialized') {
+            modelStatus.textContent = 'Loaded';
+            modelStatus.className = 'font-medium text-green-500';
+          }
+          break;
+          
+        case 'transcription':
+          addMessageToConversation('user', data.text);
+          break;
+          
+        case 'response':
+          addMessageToConversation('ai', data.text);
+          messageCount++;
+          document.getElementById('messageCount').textContent = messageCount;
+          break;
+          
+        case 'audio_status':
+          const audioWaveform = document.getElementById('audioWaveform');
+          const interruptBtn = document.getElementById('interruptBtn');
+          
+          if (data.status === 'generating') {
+            isSpeaking = true;
+            audioWaveform.classList.remove('hidden');
+            interruptBtn.classList.remove('hidden');
+          } else if (data.status === 'interrupted' || data.status === 'complete') {
+            isSpeaking = false;
+            audioWaveform.classList.add('hidden');
+            interruptBtn.classList.add('hidden');
+          }
+          break;
+          
+        case 'vad_status':
+          if (data.status === 'speech_started') {
+            document.getElementById('micStatus').textContent = 'Listening...';
+          }
+          break;
+          
+        case 'mute_status':
+          updateMicButtonUI(data.muted);
+          break;
+      }
+    };
+    
+    const addMessageToConversation = (sender, text) => {
+      const conversationHistory = document.getElementById('conversationHistory');
+      const messageElement = document.createElement('div');
+      messageElement.className = `p-4 rounded-lg ${sender === 'user' ? 'bg-gray-100 ml-12' : 'bg-indigo-50 mr-12'}`;
+      
+      const avatarDiv = document.createElement('div');
+      avatarDiv.className = 'flex items-start mb-2';
+      
+      const avatar = document.createElement('div');
+      avatar.className = `w-8 h-8 rounded-full flex items-center justify-center ${sender === 'user' ? 'bg-gray-300' : 'bg-indigo-500 text-white'}`;
+      avatar.textContent = sender === 'user' ? 'U' : 'AI';
+      
+      const timestamp = document.createElement('span');
+      timestamp.className = 'text-xs text-gray-500 ml-2';
+      timestamp.textContent = new Date().toLocaleTimeString();
+      
+      avatarDiv.appendChild(avatar);
+      avatarDiv.appendChild(timestamp);
+      
+      const textDiv = document.createElement('div');
+      textDiv.className = 'text-gray-800 mt-1';
+      textDiv.textContent = text;
+      
+      messageElement.appendChild(avatarDiv);
+      messageElement.appendChild(textDiv);
+      
+      conversationHistory.appendChild(messageElement);
+      conversationHistory.scrollTop = conversationHistory.scrollHeight;
+    };
+    
+    const startRecording = async () => {
+      console.log('Starting recording...');
+      try {
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStream = stream;
+        
+        analyzer = audioContext.createAnalyser();
+        const microphone = audioContext.createMediaStreamSource(stream);
+        microphone.connect(analyzer);
+        analyzer.fftSize = 256;
+        
+        const bufferLength = analyzer.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        
+        const vadEnabled = document.getElementById('vadEnabled').checked;
+        
+        const updateAudioLevels = () => {
+          if (!isRecording || !audioLevelsChart) return;
+          
+          analyzer.getByteFrequencyData(dataArray);
+          
+          let sum = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i];
+          }
+          const average = sum / bufferLength;
+          
+          if (audioLevelsChart && audioLevelsChart.data && audioLevelsChart.data.datasets && audioLevelsChart.data.datasets[0]) {
+            const newData = [...audioLevelsChart.data.datasets[0].data.slice(1), average];
+            audioLevelsChart.data.datasets[0].data = newData;
+            audioLevelsChart.update('none');
+          }
+          
+          if (isRecording) {
+            requestAnimationFrame(updateAudioLevels);
+          }
+        };
+        
+        updateAudioLevels();
+        
+        mediaRecorder = new MediaRecorder(stream);
+        
+        if (vadEnabled) {
+          const processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+          microphone.connect(processorNode);
+          processorNode.connect(audioContext.destination);
+          
+          processorNode.onaudioprocess = (e) => {
+            if (!isRecording) return;
+            
+            const audioData = e.inputBuffer.getChannelData(0);
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: 'audio',
+                audio: Array.from(audioData),
+                sample_rate: audioContext.sampleRate,
+                session_id: SESSION_ID
+              }));
+            }
+          };
+          
+          window.processorNode = processorNode;
+          isRecording = true;
+          document.getElementById('micStatus').textContent = 'Voice detection active...';
+          document.getElementById('micToggleBtn').classList.add('pulse');
+          
+        } else {
+          recordedChunks = [];
+          
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              recordedChunks.push(event.data);
+            }
+          };
+          
+          mediaRecorder.onstop = () => {
+            const audioBlob = new Blob(recordedChunks, { type: 'audio/wav' });
+            sendAudioToServer(audioBlob);
+            recordedChunks = [];
+          };
+          
+          mediaRecorder.start();
+          isRecording = true;
+          document.getElementById('micStatus').textContent = 'Listening...';
+          document.getElementById('micToggleBtn').classList.add('pulse');
+        }
+        
+      } catch (error) {
+        console.error('Error starting recording:', error);
+        document.getElementById('micStatus').textContent = 'Mic access denied';
+      }
+    };
+    
+    const stopRecording = () => {
+      console.log('Stopping recording...');
+      const vadEnabled = document.getElementById('vadEnabled').checked;
+      
+      isRecording = false;
+      
+      if (vadEnabled) {
+        if (window.processorNode) {
+          window.processorNode.disconnect();
+          window.processorNode = null;
+        }
+        
+        if (micStream) {
+          micStream.getTracks().forEach(track => track.stop());
+          micStream = null;
+        }
+        
+        document.getElementById('micStatus').textContent = 'Voice detection stopped';
+        document.getElementById('micToggleBtn').classList.remove('pulse');
+        
+      } else {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+          
+          if (micStream) {
+            micStream.getTracks().forEach(track => track.stop());
+            micStream = null;
+          }
+          
+          document.getElementById('micStatus').textContent = 'Processing...';
+          document.getElementById('micToggleBtn').classList.remove('pulse');
+        }
+      }
+    };
+    
+    const sendAudioToServer = async (audioBlob) => {
+      console.log('Sending audio to server...');
+      try {
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const audioData = new Float32Array(arrayBuffer);
+        
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'audio',
+            audio: Array.from(audioData),
+            sample_rate: audioContext.sampleRate,
+            session_id: SESSION_ID
+          }));
+        } else {
+          console.error('WebSocket not connected');
+          document.getElementById('micStatus').textContent = 'Not connected';
+        }
+        
+        document.getElementById('micStatus').textContent = 'Click to speak';
+      } catch (error) {
+        console.error('Error sending audio to server:', error);
+        document.getElementById('micStatus').textContent = 'Error sending audio';
+      }
+    };
+    
+    const updateMicButtonUI = (muted) => {
+      const micToggleBtn = document.getElementById('micToggleBtn');
+      const micStatus = document.getElementById('micStatus');
+      
+      if (muted) {
+        micToggleBtn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+        micToggleBtn.classList.add('bg-gray-400', 'hover:bg-gray-500');
+        micStatus.textContent = 'Mic muted';
+      } else {
+        micToggleBtn.classList.remove('bg-gray-400', 'hover:bg-gray-500');
+        micToggleBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+        micStatus.textContent = 'Click to speak';
+      }
+    };
+    
+    const sendSettings = () => {
+      console.log('Sending settings to server...');
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const config = {
+            system_prompt: document.getElementById('systemPrompt').value,
+            reference_audio_path: document.getElementById('referenceAudioPath').value,
+            reference_text: document.getElementById('referenceText').value,
+            model_path: document.getElementById('modelPath').value,
+            llm_path: document.getElementById('llmPath').value,
+            max_tokens: parseInt(document.getElementById('maxTokens').value),
+            voice_speaker_id: parseInt(document.getElementById('speakerId').value),
+            vad_enabled: document.getElementById('vadEnabled').checked,
+            vad_threshold: parseFloat(document.getElementById('vadThreshold').value),
+            embedding_model: document.getElementById('embeddingModel').value
+          };
+          
+          ws.send(JSON.stringify({
+            type: 'config',
+            config: config
+          }));
+          
+          const modelStatus = document.getElementById('modelStatus');
+          modelStatus.textContent = 'Loading...';
+          modelStatus.className = 'font-medium text-yellow-500';
+          
+          document.getElementById('settingsModal').classList.add('hidden');
+        } else {
+          console.error('WebSocket not connected');
+          alert('Not connected to server. Please try again when connection is established.');
+        }
+      } catch (error) {
+        console.error('Error sending settings:', error);
+        alert('Error sending settings to server.');
+      }
+    };
+    
+    const updateSessionDuration = () => {
+      if (!sessionStartTime) return;
+      
+      const now = new Date();
+      const diff = now - sessionStartTime;
+      
+      const hours = Math.floor(diff / 3600000).toString().padStart(2, '0');
+      const minutes = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
+      const seconds = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
+      
+      document.getElementById('sessionDuration').textContent = `${hours}:${minutes}:${seconds}`;
+    };
+    
+    const initAudioLevelsChart = () => {
+      const ctx = document.getElementById('audioLevels').getContext('2d');
+      
+      if (audioLevelsChart) {
+        audioLevelsChart.destroy();
+      }
+      
+      audioLevelsChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: Array(30).fill(''),
+          datasets: [{
+            label: 'Audio Level',
+            data: Array(30).fill(0),
+            backgroundColor: 'rgba(79, 70, 229, 0.2)',
+            borderColor: 'rgba(79, 70, 229, 1)',
+            borderWidth: 2,
+            tension: 0.4,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          animation: { duration: 0 },
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 100,
+              ticks: { display: false }
+            },
+            x: { display: false }
+          },
+          plugins: { legend: { display: false } },
+          elements: { point: { radius: 0 } },
+          layout: { padding: 0 },
+          devicePixelRatio: 1
+        }
+      });
+    };
+    
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log('DOM loaded, setting up UI...');
+      
+      initAudioLevelsChart();
+      connectWebSocket();
+      
+      sessionStartTime = new Date();
+      setInterval(updateSessionDuration, 1000);
+      
+      const micToggleBtn = document.getElementById('micToggleBtn');
+      micToggleBtn.addEventListener('click', () => {
+        console.log('Mic button clicked, isRecording:', isRecording);
+        if (isRecording) {
+          stopRecording();
+        } else {
+          startRecording();
+        }
+      });
+      
+      const interruptBtn = document.getElementById('interruptBtn');
+      interruptBtn.addEventListener('click', () => {
+        console.log('Interrupt button clicked');
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'interrupt' }));
+        }
+      });
+      
+      const settingsBtn = document.getElementById('settingsBtn');
+      const settingsModal = document.getElementById('settingsModal');
+      const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+      const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+      
+      settingsBtn.addEventListener('click', () => {
+        console.log('Settings button clicked');
+        settingsModal.classList.remove('hidden');
+      });
+      
+      closeSettingsBtn.addEventListener('click', () => {
+        console.log('Close settings button clicked');
+        settingsModal.classList.add('hidden');
+      });
+      
+      saveSettingsBtn.addEventListener('click', () => {
+        console.log('Save settings button clicked');
+        sendSettings();
+      });
+      
+      const vadThreshold = document.getElementById('vadThreshold');
+      const vadThresholdValue = document.getElementById('vadThresholdValue');
+      
+      vadThreshold.addEventListener('input', () => {
+        vadThresholdValue.textContent = vadThreshold.value;
+      });
+      
+      const vadEnabled = document.getElementById('vadEnabled');
+      const micStatus = document.getElementById('micStatus');
+      
+      vadEnabled.addEventListener('change', () => {
+        micStatus.textContent = vadEnabled.checked ? "Auto-detection enabled" : "Click to speak";
+      });
+      
+      console.log('UI setup complete');
+    });
+  </script>
+</body>
+</html>

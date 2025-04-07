@@ -50,7 +50,7 @@ class LoRALinear(nn.Module):
     adds two low-rank trainable matrices A and B, whose product is added
     to the forward pass.
     """
-    def __init__(self, in_features, out_features, r=16, alpha=16, dropout=0.0, bias=True):
+    def __init__(self, in_features, out_features, r=128, alpha=128, dropout=0.0, bias=True):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -82,8 +82,8 @@ class LoRALinear(nn.Module):
         return result + self.scaling * lora_out
 
 def replace_linear_with_lora(module: nn.Module,
-                             r=16,
-                             alpha=16,
+                             r=128,
+                             alpha=128,
                              dropout=0.0,
                              target_linear_names=None):
     """
@@ -335,8 +335,8 @@ def prepare_csm_model_for_training():
     logger.info("Applying LoRA to model...")
     model = replace_linear_with_lora(
         model,
-        r=16,
-        alpha=16,
+        r=128,
+        alpha=128,
         dropout=0.0,
         target_linear_names=None
     )
