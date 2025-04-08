@@ -1,5 +1,5 @@
 curl -X POST https://api.vapi.ai/assistant \
--H "Authorization: Bearer be32250b-4bf7-4dac-a1ea-463249d6e19d" \
+-H "Authorization: Bearer {{$dotenv VAPI_API_KEY}}" \
 -H "Content-Type: application/json" \
 -d '{
   "model": {

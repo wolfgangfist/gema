@@ -1,5 +1,5 @@
-curl -X PUT https://api.vapi.ai/assistant/a1e34534-787d-4c7e-be59-5cddf7acf9ad \
--H "Authorization: Bearer be32250b-4bf7-4dac-a1ea-463249d6e19d" \
+curl -X PUT https://api.vapi.ai/assistant/{{$dotenv VAPI_ASSISTANT_ID}} \
+-H "Authorization: Bearer {{$dotenv VAPI_API_KEY}}" \
 -H "Content-Type: application/json" \
 -d '{
   "model": {
@@ -17,6 +17,9 @@ curl -X PUT https://api.vapi.ai/assistant/a1e34534-787d-4c7e-be59-5cddf7acf9ad \
     "provider": "custom-voice",
     "server": {
       "url": "https://csm.huwngtran.com/custom-voice-tts"
+    },
+    "chunkPlan": {
+      "enabled": true
     }
   },
   "serverUrl": null,
