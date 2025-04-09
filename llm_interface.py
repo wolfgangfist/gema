@@ -28,9 +28,17 @@ class LLMInterface:
             temperature=0.7,
             top_p=0.95,
             repeat_penalty=1.1,
-            stop=["<|eot_id|>", "</s>", "<|start_header_id|>user<|end_header_id|>"]
         )
-
+        stop_tokens = ["</s>", "<|endoftext|>", "<<USR>>", "<</USR>>", "<</SYS>>", "<</USER>>", "<</ASSISTANT>>", "<|end_header_id|>", "<<ASSISTANT>>", "<|eot_id|>", "<|im_end|>", "user:", "User:", "user :", "User :"]
+        output = self.llm(prompt, **{
+                    "max_tokens": 512,
+                    "stop": stop_tokens,
+                    "echo": False,
+                    "top_k": 400,
+                    "top_p": 0.95,
+                    "temperature": 0.7,
+                    "repeat_penalty": 1.2
+                })
         return output["choices"][0]["text"].strip()
 
     def tokenize(self, text: str) -> List[int]:

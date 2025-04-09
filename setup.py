@@ -159,7 +159,7 @@ def main():
     check_cuda()
     
     # Check and install requirements
-    check_requirements()
+    #check_requirements()
     
     # Create directories
     setup_directories()

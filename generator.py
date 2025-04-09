@@ -51,7 +51,9 @@ class Generator:
 
         mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
         mimi = loaders.get_mimi(mimi_weight, device=device)
-        mimi.set_num_codebooks(32)
+        num_codebooks = 32
+        mimi.set_num_codebooks(num_codebooks)
+        self._num_codebooks = num_codebooks
         self._audio_tokenizer = mimi
 
         self.sample_rate = mimi.sample_rate
@@ -72,7 +74,6 @@ class Generator:
         if cache_key in self._text_token_cache:
             return self._text_token_cache[cache_key]
 
-        # Original implementation but with direct device placement
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
         text_frame = torch.zeros(len(text_tokens), 33, dtype=torch.long, device=self.device)
         text_frame_mask = torch.zeros(len(text_tokens), 33, dtype=torch.bool, device=self.device)
@@ -84,7 +85,6 @@ class Generator:
         
         result = (torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0))
         
-        # Store in cache for future use
         self._text_token_cache[cache_key] = result
         
         return result
@@ -99,14 +99,18 @@ class Generator:
         # (K, T)
         audio = audio.to(self.device)
         audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
+        
+        # Limit to the number of codebooks set in MIMI
+        audio_tokens = audio_tokens[:self._num_codebooks, :]
+        
         # add EOS frame
         eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
         audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
 
         audio_frame = torch.zeros(audio_tokens.size(1), 33).long().to(self.device)
         audio_frame_mask = torch.zeros(audio_tokens.size(1), 33).bool().to(self.device)
-        audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
-        audio_frame_mask[:, :-1] = True
+        audio_frame[:, :self._num_codebooks] = audio_tokens.transpose(0, 1)
+        audio_frame_mask[:, :self._num_codebooks] = True
 
         frame_tokens.append(audio_frame)
         frame_masks.append(audio_frame_mask)
@@ -170,11 +174,10 @@ class Generator:
 
         tokens, tokens_mask = [], []
 
-        # Fast path for first chunk generation
-        initial_batch_size = 10  # Smaller batch size for first chunk
-        normal_batch_size = 20  # Normal batch size after first chunk
-        initial_buffer_size = 10  # Smaller buffer for faster first delivery
-        normal_buffer_size = 20  # Normal buffer size after first chunk
+        initial_batch_size = 20  
+        normal_batch_size = 20  
+        initial_buffer_size = 20
+        normal_buffer_size = 20
         
         batch_size = initial_batch_size
         buffer_size = initial_buffer_size
@@ -203,10 +206,9 @@ class Generator:
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        expected_frame_count = buffer_size  # Match buffer size
+        expected_frame_count = buffer_size 
         frame_buffer = []
 
-        # Pre-allocate tensors to avoid allocations during generation
         zeros_1_1 = torch.zeros(1, 1).long().to(self.device)
         zeros_mask_1_1 = torch.zeros(1, 1).bool().to(self.device)
 
@@ -243,9 +245,7 @@ class Generator:
                 frame_buffer.extend(batch_samples)
                 i += len(batch_samples)
 
-                # Process buffered frames when we have enough
                 if len(frame_buffer) >= buffer_size:
-                    # Make sure we have frames in multiples of expected_frame_count
                     frames_to_process = frame_buffer[:expected_frame_count]
                     
                     # If we don't have enough frames, pad with zeros to match expected shape
@@ -333,8 +333,8 @@ class Generator:
         speaker: int,
         context: List[Segment],
         max_audio_length_ms: float = 90_000,
-        temperature: float = 0.7,
-        topk: int = 30,
+        temperature: float = 0.8,
+        topk: int = 40,
         stream: bool = False,
         output_file: Optional[str] = None,
     ):

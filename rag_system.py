@@ -328,17 +328,3 @@ class RAGSystem:
 if __name__ == "__main__":
     # Initialize the RAG system
     rag = RAGSystem("conversations.db")
-    
-    # Example: Add a conversation
-    rag.add_conversation(
-        "How do I implement a RAG system?", 
-        "A RAG (Retrieval-Augmented Generation) system combines retrieval with generation. First, you need to index your documents, then retrieve relevant ones for a query, and finally generate a response using those documents as context."
-    )
-    
-    # Example: Query the system
-    results = rag.query("Tell me about RAG systems")
-    
-    for text, score in results:
-        print(f"Score: {score:.4f}")
-        print(text)
-        print("-" * 50)

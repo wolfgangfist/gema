@@ -12,11 +12,14 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
 from safetensors.torch import save_file
-
+import csv
 from models import Model
 from moshi.models import loaders
 from huggingface_hub import hf_hub_download
 from tokenizers.processors import TemplateProcessing
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg') 
 
 # Setup logging
 logging.basicConfig(
@@ -28,10 +31,10 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DIR = "audio_data"
 OUTPUT_DIR = "finetuned_model"
-NUM_EPOCHS = 5
+NUM_EPOCHS = 30
 BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 32
-LEARNING_RATE = 2e-6
+LEARNING_RATE = 5e-6
 USE_WANDB = False
 SEED = 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -42,7 +45,155 @@ MODEL_NAME = "sesame/csm-1b"
 TRANSCRIPTION_MODEL = "openai/whisper-base"
 MAX_AUDIO_FILES = 0
 
+MAX_GRAD_NORM = 1.0
+
+LR_SCHEDULER_TYPE = "cosine_with_restarts"
+NUM_CYCLES = 2.0
 import torch.nn as nn
+
+class TrainingVisualizer:
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        self.epochs = []
+        self.losses = []
+        self.learning_rates = []
+        self.steps = []
+        
+        # Create the figure and axes only once
+        self.fig, self.axes = plt.subplots(2, 1, figsize=(10, 10))
+        self.fig.suptitle('CSM Finetuning Progress', fontsize=16)
+        
+        # Setup loss plot
+        self.axes[0].set_title('Training Loss')
+        self.axes[0].set_xlabel('Epoch')
+        self.axes[0].set_ylabel('Loss')
+        self.axes[0].grid(True, linestyle='--', alpha=0.7)
+        
+        # Setup learning rate plot
+        self.axes[1].set_title('Learning Rate')
+        self.axes[1].set_xlabel('Epoch')
+        self.axes[1].set_ylabel('Learning Rate')
+        self.axes[1].grid(True, linestyle='--', alpha=0.7)
+    
+    def update(self, epoch, step, loss, lr):
+        """Update the metrics and redraw the plot"""
+        self.epochs.append(epoch)
+        self.steps.append(step)
+        self.losses.append(loss)
+        self.learning_rates.append(lr)
+        
+        # Update loss plot
+        self.axes[0].clear()
+        self.axes[0].plot(self.epochs, self.losses, 'b-')
+        self.axes[0].set_title('Training Loss')
+        self.axes[0].set_xlabel('Epoch')
+        self.axes[0].set_ylabel('Loss')
+        self.axes[0].grid(True, linestyle='--', alpha=0.7)
+        
+        # Update learning rate plot
+        self.axes[1].clear()
+        self.axes[1].plot(self.epochs, self.learning_rates, 'g-')
+        self.axes[1].set_title('Learning Rate')
+        self.axes[1].set_xlabel('Epoch')
+        self.axes[1].set_ylabel('Learning Rate')
+        self.axes[1].grid(True, linestyle='--', alpha=0.7)
+        
+        # Add current values to title
+        min_loss = min(self.losses)
+        min_loss_epoch = self.epochs[self.losses.index(min_loss)]
+        self.fig.suptitle(f'CSM Finetuning Progress\nEpoch: {epoch:.2f}, Loss: {loss:.4f}, LR: {lr:.8f}\nBest: {min_loss:.4f} at epoch {min_loss_epoch:.2f}', fontsize=12)
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        # Save the figure
+        plot_path = os.path.join(self.output_dir, 'training_progress.png')
+        self.fig.savefig(plot_path)
+        
+    def finalize(self):
+        """Create a final, more detailed visualization when training completes"""
+        # Create a new figure for the final plot
+        final_fig = plt.figure(figsize=(12, 12))
+        gs = plt.GridSpec(3, 2, figure=final_fig)
+        
+        # Plot 1: Loss vs Steps
+        ax1 = final_fig.add_subplot(gs[0, :])
+        ax1.plot(self.steps, self.losses, 'b-', linewidth=2)
+        ax1.set_title('Training Loss vs Steps', fontsize=14)
+        ax1.set_xlabel('Steps')
+        ax1.set_ylabel('Loss')
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 2: Loss vs Epochs
+        ax2 = final_fig.add_subplot(gs[1, 0])
+        ax2.plot(self.epochs, self.losses, 'r-', linewidth=2)
+        ax2.set_title('Training Loss vs Epochs', fontsize=14)
+        ax2.set_xlabel('Epochs')
+        ax2.set_ylabel('Loss')
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 3: Learning Rate vs Steps
+        ax3 = final_fig.add_subplot(gs[1, 1])
+        ax3.plot(self.steps, self.learning_rates, 'g-', linewidth=2)
+        ax3.set_title('Learning Rate Schedule', fontsize=14)
+        ax3.set_xlabel('Steps')
+        ax3.set_ylabel('Learning Rate')
+        ax3.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 4: Combined plot with two y-axes
+        ax4 = final_fig.add_subplot(gs[2, :])
+        color1, color2 = 'blue', 'green'
+        
+        # Plot loss on left axis
+        line1 = ax4.plot(self.epochs, self.losses, color=color1, linewidth=2.5, label='Loss')
+        ax4.set_xlabel('Epochs')
+        ax4.set_ylabel('Loss', color=color1)
+        ax4.tick_params(axis='y', labelcolor=color1)
+        
+        # Plot learning rate on right axis
+        ax5 = ax4.twinx()
+        line2 = ax5.plot(self.epochs, self.learning_rates, color=color2, linewidth=2.5, label='Learning Rate')
+        ax5.set_ylabel('Learning Rate', color=color2)
+        ax5.tick_params(axis='y', labelcolor=color2)
+        
+        # Combine legends
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax4.legend(lines, labels, loc='upper right')
+        ax4.set_title('Loss and Learning Rate vs Epochs', fontsize=14)
+        ax4.grid(True, linestyle='--', alpha=0.7)
+        
+        # Add training summary
+        if self.epochs:
+            epoch_count = max(self.epochs)
+            step_count = max(self.steps)
+            min_loss = min(self.losses)
+            min_loss_epoch = self.epochs[self.losses.index(min_loss)]
+            min_loss_step = self.steps[self.losses.index(min_loss)]
+            
+            summary_text = (
+                f"Training Summary\n"
+                f"Total Epochs: {epoch_count:.2f}\n"
+                f"Total Steps: {step_count}\n"
+                f"Min Loss: {min_loss:.6f} (Epoch {min_loss_epoch:.2f}, Step {min_loss_step})"
+            )
+            
+            plt.figtext(0.02, 0.02, summary_text, fontsize=10, 
+                        bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'))
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+        final_fig.suptitle('CSM Model Finetuning Metrics', fontsize=16, fontweight='bold')
+        plt.subplots_adjust(top=0.93)
+        
+        # Save the final detailed plot
+        final_plot_path = os.path.join(self.output_dir, 'training_metrics_final.png')
+        final_fig.savefig(final_plot_path, dpi=300, bbox_inches='tight')
+        plt.close(final_fig)
+        plt.close(self.fig)
+        
+        logger.info(f"Final training visualization saved to {final_plot_path}")
+        
+        return final_plot_path
+
 
 class LoRALinear(nn.Module):
     """
@@ -307,7 +458,6 @@ def prepare_csm_model_for_training():
     mimi = loaders.get_mimi(mimi_weight, device=DEVICE)
     mimi.set_num_codebooks(32)
     audio_tokenizer = mimi
-    # Create codebook embedding layer using Mimi's codebook 0 centroids
     try:
         codebook_0_centroids = mimi.quantizer.codebooks[0].weight.data  # [V, D]
         num_codebook_0_tokens, embedding_dim = codebook_0_centroids.shape
@@ -316,8 +466,7 @@ def prepare_csm_model_for_training():
         logger.info(f"Initialized codebook_embedding with shape: {codebook_0_centroids.shape}")
     except Exception as e:
         logger.error(f"Failed to initialize codebook_embedding from Mimi: {e}")
-        # fallback: randomly initialize
-        num_codebook_0_tokens, embedding_dim = 1024, 1024  # Adjust if needed
+        num_codebook_0_tokens, embedding_dim = 1024, 1024 
         model.codebook_embedding = nn.Embedding(num_codebook_0_tokens, embedding_dim).to(DEVICE)
         nn.init.xavier_uniform_(model.codebook_embedding.weight)
         logger.info("Falling back to random init for codebook_embedding")
@@ -469,7 +618,6 @@ def single_pass_forward(model, bridging_module, target_tokens, target_masks, pos
     
     return loss
 
-
 def strip_bias_keys(state_dict: dict) -> dict:
     new_sd = {}
     for k, v in state_dict.items():
@@ -481,7 +629,6 @@ def strip_bias_keys(state_dict: dict) -> dict:
         else:
             print(f"Stripping {k} from checkpoint")
     return new_sd
-
 
 def remove_lora_modules(module: nn.Module) -> nn.Module:
     """
@@ -514,7 +661,6 @@ def remove_lora_modules(module: nn.Module) -> nn.Module:
 
     return module
 
-
 def merge_lora_layer(lora_module: LoRALinear):
     """
     Merge the LoRA params (lora_A, lora_B) into the base weight in-place.
@@ -541,11 +687,23 @@ def merge_lora_weights(model: nn.Module):
 
 def finetune(model, dataset):
     logger.info("Starting finetuning process")
+    csv_file = os.path.join(OUTPUT_DIR, "training_metrics.csv")
+    with open(csv_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "step", "global_step", "loss", "learning_rate"])
     
+    def log_metrics(epoch, step, global_step, loss, learning_rate):
+        # Log to CSV
+        with open(csv_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, step, global_step, loss, learning_rate])
+        
+        # Update visualization
+        visualizer.update(epoch, global_step, loss, learning_rate)
+
+    visualizer = TrainingVisualizer(OUTPUT_DIR)
     bridging_module = BridgingModule(in_dim=2048, out_dim=1024).to(DEVICE)
     
-    # Important: We do want to train bridging module as well,
-    # so set its parameters to require_grad=True
     for param in bridging_module.parameters():
         param.requires_grad = True
 
@@ -567,9 +725,14 @@ def finetune(model, dataset):
     
     steps_per_epoch = len(dataloader)
     num_training_steps = steps_per_epoch * NUM_EPOCHS // GRADIENT_ACCUMULATION_STEPS
-    lr_scheduler = get_scheduler("cosine", optimizer=optimizer,
-                                 num_warmup_steps=WARMUP_STEPS,
-                                 num_training_steps=num_training_steps)
+    
+    from transformers import get_cosine_with_hard_restarts_schedule_with_warmup
+    lr_scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(
+        optimizer=optimizer,
+        num_warmup_steps=WARMUP_STEPS,
+        num_training_steps=num_training_steps,
+        num_cycles=2
+    )
     
     if USE_WANDB:
         wandb.init(project="csm-finetuning", name="single-pass-lora")
@@ -611,19 +774,28 @@ def finetune(model, dataset):
                 else:
                     loss.backward()
                 
+                # Update only after accumulating enough steps
                 if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0 or step == len(dataloader) - 1:
+                    # Unscale for safe grad clipping if using FP16
                     if MIXED_PRECISION:
                         scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+                    
+                    # >>> ADDED: explicit gradient clipping with a variable
+                    torch.nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
                     
                     if MIXED_PRECISION:
                         scaler.step(optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
+                    
                     lr_scheduler.step()
                     optimizer.zero_grad()
-                    
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    current_loss = loss.item() * GRADIENT_ACCUMULATION_STEPS
+                    current_epoch = epoch + step / steps_per_epoch
+                    log_metrics(current_epoch, step, global_step, current_loss, current_lr)
+
                     global_step += 1
                     if USE_WANDB:
                         wandb.log({
@@ -678,7 +850,6 @@ def finetune(model, dataset):
     final_merged_path = os.path.join(OUTPUT_DIR, "model.safetensors")
     save_file(merged_state, final_merged_path)
     logger.info(f"LoRA-merged & replaced model saved to {final_merged_path}")
-
 
     if USE_WANDB:
         wandb.finish()
