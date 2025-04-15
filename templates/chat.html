@@ -6,6 +6,16 @@
   <title>AI Companion - Chat</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .pulse {
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+    }
+  </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen flex flex-col">
 
@@ -38,9 +48,6 @@
           <div class="text-center">
             <span id="micStatus" class="text-sm text-gray-300 block">Click to speak</span>
           </div>
-          <button id="interruptBtn" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 hidden">
-            Interrupt
-          </button>
         </div>
 
         <!-- Audio Waveform -->
@@ -64,6 +71,7 @@
           <div class="text-sm space-y-1">
             <div class="flex justify-between"><span>Connection:</span><span id="connectionStatus" class="text-yellow-400">Connecting...</span></div>
             <div class="flex justify-between"><span>Models:</span><span id="modelStatus" class="text-yellow-400">Not Loaded</span></div>
+            <div class="flex justify-between"><span>Audio:</span><span id="audioStatus" class="text-yellow-400">Idle</span></div>
           </div>
         </div>
 
@@ -83,7 +91,7 @@
     </aside>
   </main>
 
-    <!-- Settings Modal -->
+  <!-- Settings Modal -->
   <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-70 hidden z-50 flex items-center justify-center">
     <div class="bg-gray-800 text-white p-6 rounded-lg shadow-lg w-full max-w-3xl max-h-screen overflow-y-auto">
       <div class="flex justify-between items-center mb-6">

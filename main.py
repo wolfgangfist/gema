@@ -1,5 +1,6 @@
 import asyncio
 import os
+import platform
 import sqlite3
 import time
 import threading
@@ -264,8 +265,12 @@ def process_user_input(user_text, session_id="default"):
     
     if is_speaking:
         with user_input_lock:
+            # Don't queue too many requests - limit to last 3 to avoid memory issues
+            if len(pending_user_inputs) >= 3:
+                # Keep only the most recent requests
+                pending_user_inputs = pending_user_inputs[-2:]
             pending_user_inputs.append((user_text, session_id))
-            logger.info(f"Added user input to pending queue: '{user_text}'")
+            logger.info(f"Added user input to pending queue (total: {len(pending_user_inputs)}): '{user_text}'")
         return
     
     context = "\n".join([f"User: {msg['user']}\nAI: {msg['ai']}" for msg in conversation_history[-5:]])
@@ -385,109 +390,13 @@ def add_segment(text, speaker_id, audio_tensor):
     reference_segments.append(Segment(text=text, speaker=speaker_id, audio=audio_tensor))
     while len(reference_segments) > MAX_SEGMENTS:
         reference_segments.pop(0)
-
-def fade_out_audio():
-    """Apply a smooth fade-out effect to the buffered audio chunks and send to output"""
-    global audio_chunk_buffer, audio_queue
-    
-    if not audio_chunk_buffer:
-        return
-        
-    # Concatenate all chunks in the buffer
-    combined = np.concatenate(audio_chunk_buffer)
-    
-    # Use a cosine (Hann) window for smoother fade-out
-    # This creates a more natural-sounding fade than linear
-    fade_samples = len(combined)
-    fade_window = np.cos(np.linspace(0, np.pi/2, fade_samples))**2
-    fade_envelope = fade_window[::-1]  # Reverse to get fade-out
-    
-    # Apply fade-out with appropriate normalization to prevent clipping
-    max_val = np.max(np.abs(combined))
-    if max_val > 0:
-        # Normalize to prevent clipping
-        normalized = combined / max_val
-        faded_audio = normalized * fade_envelope
-        # Add a short period of silence at the end to prevent clicks
-        silence_samples = int(0.05 * generator.sample_rate)  # 50ms silence
-        silence = np.zeros(silence_samples)
-        faded_audio = np.concatenate([faded_audio, silence])
-    else:
-        faded_audio = combined * fade_envelope
-    
-    # Apply a low-pass filter to smooth any discontinuities
-    # This is a simple moving average filter
-    window_size = min(32, len(faded_audio) // 10)
-    if window_size > 1:
-        window = np.ones(window_size) / window_size
-        # Only filter the end of the audio where the fade happens
-        end_section = faded_audio[-window_size*4:]
-        filtered_end = np.convolve(end_section, window, mode='same')
-        faded_audio[-window_size*4:] = filtered_end
-    
-    # Send the faded audio to the output queue
-    audio_queue.put(faded_audio)
-    
-    # Clear the buffer
-    audio_chunk_buffer = []
-
-def audio_playback_thread():
-    """
-    Improved audio playback thread that prevents clipping between audio chunks.
-    Uses a single continuous buffer for smooth playback.
-    """
-    global audio_queue
-    
-    # Create a more efficient playback system
-    playback_buffer = np.array([], dtype=np.float32)
-    
-    while True:
-        try:
-            # Get next chunk (with timeout to check for program exit)
-            chunk = audio_queue.get(timeout=0.1)
-            
-            if chunk is None:
-                # If we get None, it means current generation is complete
-                # Play any remaining audio in buffer
-                if len(playback_buffer) > 0:
-                    sd.play(playback_buffer, generator.sample_rate)
-                    sd.wait()
-                    playback_buffer = np.array([], dtype=np.float32)
-                continue
-                
-            # Add chunk to buffer (no crossfade needed for normal playback)
-            playback_buffer = np.concatenate([playback_buffer, chunk]) if len(playback_buffer) > 0 else chunk
-            
-            # Play when buffer has enough data for efficiency
-            # Avoid playing tiny chunks which can cause gaps
-            min_buffer_time = 0.1  # seconds
-            min_buffer_samples = int(min_buffer_time * generator.sample_rate)
-            
-            if len(playback_buffer) >= min_buffer_samples:
-                sd.play(playback_buffer, generator.sample_rate)
-                sd.wait()
-                playback_buffer = np.array([], dtype=np.float32)
-                
-        except queue.Empty:
-            # Queue is empty but we have data in buffer - play it
-            if len(playback_buffer) > 0:
-                sd.play(playback_buffer, generator.sample_rate)
-                sd.wait()
-                playback_buffer = np.array([], dtype=np.float32)
-        except Exception as e:
-            logger.error(f"Audio playback error: {e}")
-            # Clear buffer on error to avoid getting stuck
-            playback_buffer = np.array([], dtype=np.float32)
-
-
+       
 def audio_generation_thread(text, output_file):
     """
-    Modified audio generation thread that doesn't introduce clipping.
-    Simplifies buffer handling for normal audio playback.
+    Ultra-low overhead audio generation thread.
+    Optimized for maximum speed by eliminating all unnecessary processing.
     """
     global is_speaking, interrupt_flag, audio_queue
-    
-    # Try to acquire the lock, but don't block if already locked
     if not audio_gen_lock.acquire(blocking=False):
         logger.warning("Another audio generation is in progress, skipping this one")
         asyncio.run_coroutine_threadsafe(
@@ -497,67 +406,499 @@ def audio_generation_thread(text, output_file):
         return
     
     try:
-        is_speaking = True
+        # First, clear any existing interrupt flag
         interrupt_flag = False
+        
+        # Reset model state completely
+        if hasattr(generator, '_model') and hasattr(generator._model, 'reset_caches'):
+            generator._model.reset_caches()
+            # Also clear the text token cache if it exists
+            if hasattr(generator, '_text_token_cache'):
+                generator._text_token_cache = {}
+        
+        # Force CUDA synchronization and clear cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            
+        is_speaking = True
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         all_audio_chunks = []
         
+        # Minimal prebuffer for faster start
+        prebuffer_chunks = []
+        prebuffer_complete = False
+        prebuffer_event = threading.Event()
+        
         try:
-            # Clear CUDA cache before starting
+            # Clear CUDA cache before generation
             torch.cuda.empty_cache()
 
-            for audio_chunk in generator.generate_stream(
-                text=text, speaker=config.voice_speaker_id, context=reference_segments,
-                max_audio_length_ms=40000, temperature=0.7, topk=30
-            ):
-                if interrupt_flag:
-                    # For interruption, implement a simple fade out
-                    # This only happens during interruptions, not normal playback
-                    if len(all_audio_chunks) > 0:
-                        # Get last chunk and apply a simple fade out
-                        last_chunk = audio_chunk.cpu().numpy().astype(np.float32)
-                        fade_samples = min(len(last_chunk), int(0.1 * generator.sample_rate))  # 100ms fade
-                        if fade_samples > 0:
-                            fade = np.linspace(1.0, 0.0, fade_samples)
-                            last_chunk[-fade_samples:] *= fade
-                            audio_queue.put(last_chunk)
-                    break
+            # Dynamically estimate the maximum audio length (in milliseconds)
+            words = text.split()
+            avg_wpm = 150
+            words_per_second = avg_wpm / 60  # ~2.5 words per second
+            estimated_seconds = len(words) / words_per_second
+            buffer_seconds = 2  # Extra buffer
+            max_audio_length_ms = int((estimated_seconds + buffer_seconds) * 1000)
+
+            # Start a separate thread to handle real-time inference
+            def inference_worker():
+                nonlocal prebuffer_complete, prebuffer_chunks
+
+                # Lowercase the text to improve synthesis quality
+                text_lower = text.lower()
+
+                # Start a timer to measure generation latency
+                generation_start = time.time()
+                last_chunk_time = generation_start
+                
+                # Use smaller chunk sizes for more frequent updates
+                chunk_counter = 0
+                
+                try:
+                    for audio_chunk in generator.generate_stream(
+                        text=text_lower,
+                        speaker=config.voice_speaker_id,
+                        context=reference_segments,
+                        max_audio_length_ms=max_audio_length_ms,
+                        temperature=0.8,
+                        topk=50,
+                    ):
+                        # Check interrupt flag frequently and exit immediately if set
+                        if interrupt_flag:
+                            logger.info("Interrupt detected in generator - stopping generation")
+                            # Break without additional processing to stop generation ASAP
+                            break
+
+                        # Track timing for analytics
+                        now = time.time()
+                        chunk_latency = now - last_chunk_time
+                        if chunk_counter % 10 == 0:  # Log every 10 chunks
+                            logger.debug(f"Audio chunk {chunk_counter} generated in {chunk_latency*1000:.1f}ms")
+                        last_chunk_time = now
+                        chunk_counter += 1
+                        
+                        # Process the audio chunk - ensure it's a valid numpy array
+                        try:
+                            # Check interrupt flag again before processing chunk
+                            if interrupt_flag:
+                                break
+                                
+                            chunk_array = audio_chunk.cpu().numpy().astype(np.float32)
+                            if chunk_array.size == 0:
+                                logger.warning("Received empty audio chunk from generator")
+                                continue
+                                
+                            all_audio_chunks.append(audio_chunk)
+                            
+                            # Initial prebuffering - just collect one chunk for minimal delay
+                            if not prebuffer_complete:
+                                prebuffer_chunks.append(chunk_array)
+                                # Use minimal prebuffer (just 1 chunk) for fastest start
+                                prebuffer_complete = True
+                                prebuffer_event.set()
+                            else:
+                                # Check interrupt flag again before queueing audio
+                                if interrupt_flag:
+                                    break
+                                    
+                                # Enqueue the audio chunk for playback
+                                try:
+                                    audio_queue.put(chunk_array)
+                                except:
+                                    logger.error("Failed to put audio chunk in queue")
+                            
+                            # Send chunk to WebSocket clients
+                            try:
+                                send_to_all_clients({
+                                    "type": "audio_chunk",
+                                    "audio": chunk_array.tolist(),
+                                    "sample_rate": generator.sample_rate
+                                })
+                            except Exception as e:
+                                logger.error(f"Error sending to clients: {e}")
+                                
+                        except Exception as e:
+                            logger.error(f"Error processing chunk: {e}")
                     
-                all_audio_chunks.append(audio_chunk)
-                
-                # Send chunk directly to audio queue without any buffering
-                audio_queue.put(audio_chunk.cpu().numpy().astype(np.float32))
-                
+                    # Log total generation time
+                    total_time = time.time() - generation_start
+                    if all_audio_chunks:
+                        total_audio_seconds = sum(len(chunk) for chunk in all_audio_chunks) / generator.sample_rate
+                        rtf = total_time / total_audio_seconds
+                        logger.info(f"Audio generated in {total_time:.2f}s, RTF: {rtf:.2f}x")
+                    
+                    # Ensure prebuffer is released if generation finished before prebuffering
+                    if not prebuffer_complete:
+                        prebuffer_complete = True
+                        prebuffer_event.set()
+                    
+                except Exception as e:
+                    logger.error(f"Error in inference worker: {e}")
+                    prebuffer_event.set()  # Ensure the event is set to prevent deadlock
+            
+            # Notify clients that audio generation is beginning
+            try:
+                send_to_all_clients({"type": "audio_status", "status": "generating"})
+            except Exception as e:
+                logger.error(f"Error sending generating status: {e}")
+            
+            # Start the inference thread
+            inference_thread = threading.Thread(target=inference_worker, daemon=True)
+            inference_thread.start()
+            
+            # Wait for initial prebuffer to fill (or fail)
+            prebuffer_event.wait(timeout=1.0)  # Wait up to 1 second for prebuffering
+            
+            # Check for interrupt before proceeding
+            if interrupt_flag:
+                logger.info("Interrupt detected before playback started - aborting")
+                # Stop inference thread 
+                if inference_thread.is_alive():
+                    # We can't join directly as it may be blocked in model
+                    logger.info("Waiting for inference thread to stop")
+                # Skip adding to audio queue
+                raise InterruptedError("Generation interrupted")
+            
+            # Safety check prebuffered chunks
+            valid_prebuffer_chunks = [chunk for chunk in prebuffer_chunks if isinstance(chunk, np.ndarray) and chunk.size > 0]
+            
+            # Flush prebuffer to playback queue with no additional processing
+            if valid_prebuffer_chunks and not interrupt_flag:
+                logger.info(f"Starting playback with {len(valid_prebuffer_chunks)} prebuffered chunks")
+                for chunk in valid_prebuffer_chunks:
+                    # Check for interrupt again
+                    if interrupt_flag:
+                        break
+                    try:
+                        audio_queue.put(chunk)
+                    except:
+                        logger.error("Failed to put prebuffer chunk in queue")
+            
+            # Wait for inference to complete
+            inference_thread.join(timeout=30.0)  # Add timeout to prevent hanging
+
             if all_audio_chunks and not interrupt_flag:
-                complete_audio = torch.cat(all_audio_chunks)
-                save_audio_and_trim(output_file, "default", config.voice_speaker_id, complete_audio, generator.sample_rate)
-                add_segment(text, config.voice_speaker_id, complete_audio)
+                try:
+                    complete_audio = torch.cat(all_audio_chunks)
+                    save_audio_and_trim(output_file, "default", config.voice_speaker_id, complete_audio, generator.sample_rate)
+                    add_segment(text.lower(), config.voice_speaker_id, complete_audio)
+                except Exception as e:
+                    logger.error(f"Error saving complete audio: {e}")
 
         except RuntimeError as e:
             logger.error(f"CUDA memory error during audio generation: {e}")
-            audio_queue.put(None)
-            asyncio.run_coroutine_threadsafe(
-                message_queue.put({"type": "error", "message": "Audio generation failed due to GPU memory error"}),
-                loop
-            )
+            # Force a more extensive CUDA cleanup
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    if hasattr(generator, '_model'):
+                        generator._model.to('cpu')
+                        torch.cuda.empty_cache()
+                        generator._model.to('cuda')
+                except Exception as cuda_e:
+                    logger.error(f"Error during CUDA cleanup: {cuda_e}")
+                    
+            try:
+                audio_queue.put(None)
+            except:
+                pass
+                
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    message_queue.put({"type": "error", "message": "Audio generation failed due to GPU memory error"}),
+                    loop
+                )
+            except Exception as e:
+                logger.error(f"Failed to send error message: {e}")
+        except InterruptedError:
+            logger.info("Audio generation was interrupted")
+        except Exception as e:
+            logger.error(f"Unexpected error in audio generation: {e}")
         finally:
             is_speaking = False
-            audio_queue.put(None)  # Signal end of generation
-            asyncio.run_coroutine_threadsafe(
-                message_queue.put({"type": "audio_status", "status": "complete"}),
-                loop
-            )
-            
+            # Signal end of generation to the playback thread
+            try:
+                audio_queue.put(None)
+            except:
+                pass
+                
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    message_queue.put({"type": "audio_status", "status": "complete"}),
+                    loop
+                )
+            except Exception as e:
+                logger.error(f"Failed to send complete status: {e}")
+                
+            # Make sure CUDA is clean before processing next request
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
             # Process any pending user inputs
-            with user_input_lock:
-                if pending_user_inputs:
-                    user_text, session_id = pending_user_inputs.pop(0)
-                    pending_user_inputs.clear()  # Clear any other pending inputs
-                    threading.Thread(target=lambda: process_user_input(user_text, session_id), daemon=True).start()
+            try:
+                with user_input_lock:
+                    if pending_user_inputs:
+                        user_text, session_id = pending_user_inputs.pop(0)
+                        pending_user_inputs.clear()  # Clear any other pending inputs
+                        # Add small delay to ensure complete cleanup
+                        time.sleep(0.2)
+                        threading.Thread(target=lambda: process_user_input(user_text, session_id), daemon=True).start()
+            except Exception as e:
+                logger.error(f"Failed to process pending inputs: {e}")
     finally:
-        # Always release the lock
         audio_gen_lock.release()
 
+def audio_playback_thread():
+    """
+    Ultra-low overhead audio playback thread with minimal processing.
+    Optimized for maximum speed by eliminating resampling and overlap processing.
+    """
+    global audio_queue, interrupt_flag
+    # Initialize shared buffer and associated lock for thread-safe access by the callback
+    shared_buffer = np.array([], dtype=np.float32)
+    buffer_lock = threading.Lock()
+    
+    # Set higher process priority for better real-time performance
+    try:
+        import psutil
+        process = psutil.Process()
+        if platform.system() == 'Windows':
+            process.nice(psutil.HIGH_PRIORITY_CLASS)
+        else:
+            # Use higher priority for Linux
+            process.nice(-1)  # -20 to 19, lower is higher priority
+    except (ImportError, PermissionError, psutil.AccessDenied):
+        logger.warning("Could not set process priority - continuing with default priority")
+    
+    # CSM sample rate used by the generator
+    csm_sample_rate = 24000
+    logger.info(f"Using CSM sample rate for playback: {csm_sample_rate}Hz")
+    
+    # Initialize state flags and output sample rate
+    audio_device_available = False
+    output_sample_rate = csm_sample_rate
+
+    # Check for available audio output device
+    try:
+        import sounddevice as sd
+        devices = sd.query_devices()
+        default_output = sd.query_devices(kind='output')
+        logger.info(f"Default output device: {default_output['name']}")
+        supported_rate = default_output.get('default_samplerate', csm_sample_rate)
+        logger.info(f"Default device sample rate: {supported_rate}Hz")
+        
+        # Force using CSM sample rate directly to avoid resampling latency
+        logger.info(f"Forcing direct playback at {csm_sample_rate}Hz for maximum speed")
+        audio_device_available = True
+
+    except Exception as e:
+        logger.warning(f"Audio device initialization failed: {e}")
+        logger.info("Running in headless mode - will save audio files but not play audio")
+        audio_device_available = False
+
+    # Counter and directory for fallback file saving
+    file_counter = 0
+    os.makedirs("audio/fallback", exist_ok=True)
+
+    # Ultra-low latency buffer size
+    buffer_size = 16 
+    
+    if audio_device_available:
+        try:
+            import sounddevice as sd
+            # Define non-blocking callback to continuously deliver audio to the output device
+            def callback(outdata, frames, time_info, status):
+                nonlocal shared_buffer
+                if status:
+                    logger.warning(f"Audio callback status: {status}")
+                
+                with buffer_lock:
+                    if len(shared_buffer) >= frames:
+                        # Fill the output buffer with available samples
+                        outdata[:, 0] = shared_buffer[:frames]
+                        shared_buffer = shared_buffer[frames:]
+                    else:
+                        # Not enough samples: fill what's available and pad the rest with zeros
+                        available = len(shared_buffer)
+                        if available > 0:
+                            outdata[:available, 0] = shared_buffer
+                        outdata[available:, 0] = 0
+                        shared_buffer = np.zeros(0, dtype=np.float32)  # Safety: use zeros instead of empty
+                        
+                        # Request more audio data to prevent starvation
+                        if available < frames / 2:
+                            # Less risky way to request more data
+                            try:
+                                audio_queue.put_nowait("request_more")
+                            except queue.Full:
+                                pass  # Ignore if queue is full
+            
+            # Use the CSM sample rate directly for the output stream
+            stream = sd.OutputStream(
+                samplerate=csm_sample_rate,  # Use the CSM sample rate directly
+                channels=1,
+                callback=callback,
+                blocksize=buffer_size,
+                latency=0.01  # Ultra-low latency setting
+            )
+            stream.start()
+            logger.info(f"Started direct audio playback stream at {csm_sample_rate}Hz with blocksize {buffer_size}.")
+        except Exception as e:
+            logger.error(f"Failed to start audio stream: {e}")
+            audio_device_available = False
+
+    # In fallback mode, accumulate audio into a buffer for file writing
+    fallback_buffer = np.zeros(0, dtype=np.float32)  # Safety: use zeros instead of empty
+
+    # Main loop: retrieve audio chunks from the queue and process them
+    while True:
+        try:
+            # Reduced timeout for more frequent checks
+            chunk = audio_queue.get(timeout=0.01)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            logger.error(f"Error getting item from audio queue: {e}")
+            continue
+
+        if chunk is None:
+            # End of current audio generation signal
+            logger.debug("Received end-of-generation signal in playback thread")
+            # Clear buffer on stop command to prevent playing stale audio
+            with buffer_lock:
+                shared_buffer = np.zeros(0, dtype=np.float32)
+            break
+            
+        if isinstance(chunk, str) and chunk == "request_more":
+            # This is just a signal that the buffer is low, not actual audio data
+            continue
+
+        # Make sure we're dealing with a valid chunk
+        if not isinstance(chunk, np.ndarray) or chunk.size == 0:
+            continue
+
+        # Check if interrupted - if so, clear buffer and exit
+        if interrupt_flag:
+            logger.info("Interrupt detected in playback thread - clearing buffer")
+            with buffer_lock:
+                shared_buffer = np.zeros(0, dtype=np.float32)
+            break
+
+        # Process the audio chunk
+        try:
+            if audio_device_available:
+                # Direct path with minimal processing - just add to buffer
+                with buffer_lock:
+                    if shared_buffer.size > 0:
+                        shared_buffer = np.concatenate((shared_buffer, chunk))
+                    else:
+                        shared_buffer = chunk.copy()
+            else:
+                # In fallback mode: accumulate and then save to file when the buffer is long enough
+                if fallback_buffer.size > 0:
+                    fallback_buffer = np.concatenate((fallback_buffer, chunk))
+                else:
+                    fallback_buffer = chunk.copy()
+                if len(fallback_buffer) >= csm_sample_rate:  # 1 second of audio
+                    file_path = f"audio/fallback/chunk_{file_counter}.wav"
+                    try:
+                        import scipy.io.wavfile as wavfile
+                        wavfile.write(file_path, csm_sample_rate, fallback_buffer)
+                        logger.info(f"Saved audio chunk to {file_path}")
+                        file_counter += 1
+                    except Exception as e:
+                        logger.error(f"Error saving audio file: {e}")
+                    fallback_buffer = np.zeros(0, dtype=np.float32)
+        except Exception as e:
+            logger.error(f"Error processing audio chunk: {e}")
+
+    # End of generation: flush any remaining audio in the buffer
+    if audio_device_available:
+        try:
+            # If interrupted, don't wait - clear buffer immediately
+            if interrupt_flag:
+                with buffer_lock:
+                    shared_buffer = np.zeros(0, dtype=np.float32)
+            else:
+                # Otherwise, give the stream a short period to play out remaining audio
+                timeout_time = time.time() + 0.2
+                while shared_buffer.size > 0 and time.time() < timeout_time:
+                    time.sleep(0.01)
+            
+            # Don't close stream - just clear buffer and let it keep running for next generation
+            logger.info("Audio playback for current generation completed.")
+        except Exception as e:
+            logger.error(f"Error finishing audio playback: {e}")
+    else:
+        if fallback_buffer.size >= csm_sample_rate / 4:
+            file_path = f"audio/fallback/chunk_{file_counter}.wav"
+            try:
+                import scipy.io.wavfile as wavfile
+                wavfile.write(file_path, csm_sample_rate, fallback_buffer)
+                logger.info(f"Saved final audio chunk to {file_path}")
+            except Exception as e:
+                logger.error(f"Error saving final audio file: {e}")
+    
+    # Start a new playback thread for the next generation
+    threading.Thread(target=audio_playback_thread, daemon=True, name="audio_playback").start()
+    
+def handle_interrupt(websocket):
+    global is_speaking, interrupt_flag, audio_queue, last_interrupt_time
+    
+    # Implement interrupt cooldown to prevent rapid interruptions
+    current_time = time.time()
+    if current_time - last_interrupt_time < interrupt_cooldown:
+        logger.info("Ignoring interrupt: too soon after previous interrupt")
+        return False
+        
+    last_interrupt_time = current_time
+    
+    if is_speaking:
+        logger.info("Interruption requested")
+        
+        # Set interrupt flag first before any other operations
+        interrupt_flag = True
+        
+        # Clear the audio queue to stop additional audio from being processed
+        try:
+            # Put None at the front of the queue to signal stop
+            temp_queue = queue.Queue()
+            temp_queue.put(None)
+            
+            # Drain the existing queue to clear any pending chunks
+            while not audio_queue.empty():
+                try:
+                    audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+                    
+            # Now put the None signal
+            audio_queue.put(None)
+        except:
+            # If queue operations fail, at least we have the interrupt flag set
+            pass
+        
+        # Force CUDA synchronization to help prevent errors in future operations
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except:
+                pass
+        
+        # Reset VAD to prepare for new input
+        vad_processor.reset()
+        
+        # Notify client of interruption
+        asyncio.run_coroutine_threadsafe(
+            websocket.send_json({"type": "audio_status", "status": "interrupted"}),
+            loop
+        )
+        return True
+    return False
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

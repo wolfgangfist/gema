@@ -5,6 +5,7 @@ import time
 import queue
 import threading
 import platform
+from typing_extensions import OrderedDict
 import wave
 import numpy as np
 import torch
@@ -14,13 +15,15 @@ from models import Model, ModelArgs
 from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
+import logging
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Segment:
     speaker: int
     text: str
-    # (num_samples,), sample_rate = 24_000
+    sample_rate = 24_000
     audio: torch.Tensor
 
 
@@ -51,7 +54,8 @@ class Generator:
 
         mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
         mimi = loaders.get_mimi(mimi_weight, device=device)
-        num_codebooks = 32
+        
+        num_codebooks = model.config.audio_num_codebooks
         mimi.set_num_codebooks(num_codebooks)
         self._num_codebooks = num_codebooks
         self._audio_tokenizer = mimi
@@ -59,8 +63,12 @@ class Generator:
         self.sample_rate = mimi.sample_rate
         self.device = device
 
-        self._stream_buffer_size = 10
+        self._stream_buffer_size = 20
         self.max_seq_len = 2048
+        self._cache = OrderedDict()
+        self._text_token_cache = {}
+        torch.set_num_threads(16)
+        torch.cuda.set_per_process_memory_fraction(0.95)
 
     def _tokenize_text_segment(self, text: str, speaker: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -75,8 +83,8 @@ class Generator:
             return self._text_token_cache[cache_key]
 
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
-        text_frame = torch.zeros(len(text_tokens), 33, dtype=torch.long, device=self.device)
-        text_frame_mask = torch.zeros(len(text_tokens), 33, dtype=torch.bool, device=self.device)
+        text_frame = torch.zeros(len(text_tokens), self._num_codebooks+1, dtype=torch.long, device=self.device)
+        text_frame_mask = torch.zeros(len(text_tokens), self._num_codebooks+1, dtype=torch.bool, device=self.device)
         text_frame[:, -1] = torch.tensor(text_tokens, device=self.device)
         text_frame_mask[:, -1] = True
 
@@ -91,7 +99,6 @@ class Generator:
 
 
     def _tokenize_audio(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert audio.ndim == 1, "Audio must be single channel"
 
         frame_tokens = []
         frame_masks = []
@@ -107,8 +114,8 @@ class Generator:
         eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
         audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
 
-        audio_frame = torch.zeros(audio_tokens.size(1), 33).long().to(self.device)
-        audio_frame_mask = torch.zeros(audio_tokens.size(1), 33).bool().to(self.device)
+        audio_frame = torch.zeros(audio_tokens.size(1), self._num_codebooks+1).long().to(self.device)
+        audio_frame_mask = torch.zeros(audio_tokens.size(1), self._num_codebooks+1).bool().to(self.device)
         audio_frame[:, :self._num_codebooks] = audio_tokens.transpose(0, 1)
         audio_frame_mask[:, :self._num_codebooks] = True
 
@@ -140,13 +147,13 @@ class Generator:
 
     
     def _decode_frames(self, frames):
-        """Decode a batch of frames into audio with optimized memory handling"""
         if not frames:
             return torch.tensor([])
         
-        audio = self._audio_tokenizer.decode(torch.stack(frames).permute(1, 2, 0)).squeeze(0).squeeze(0)
-
-        return audio 
+        # Only use first N codebooks for faster decoding
+        frames_reduced = [frame[:, :self._num_codebooks//2] for frame in frames]
+        audio = self._audio_tokenizer.decode(torch.stack(frames_reduced).permute(1, 2, 0)).squeeze(0).squeeze(0)
+        return audio
 
     @torch.inference_mode()
     def generate_stream(
@@ -174,7 +181,7 @@ class Generator:
 
         tokens, tokens_mask = [], []
 
-        initial_batch_size = 20  
+        initial_batch_size = 20
         normal_batch_size = 20  
         initial_buffer_size = 20
         normal_buffer_size = 20
@@ -232,7 +239,15 @@ class Generator:
                 for _ in range(batch_size_actual):
                     with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
                         sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-
+                        if torch.cuda.is_available() and hasattr(torch, "cuda") and hasattr(torch.cuda, "is_available"):
+                            try:
+                                torch.cuda.synchronize()  # Force sync before checking
+                                if sample.numel() == 0 or torch.isnan(sample).any():
+                                    print("Warning: Generated empty or NaN sample, stopping generation")
+                                    break
+                            except:
+                                print("Error checking tensor, stopping generation")
+                                break
                     if torch.all(sample == 0):
                         break
 
@@ -517,79 +532,81 @@ import torch
 from models import Model, ModelArgs
 from generator import Generator
 
-def load_csm_1b_local(model_path: str, device: str = "cuda"):
+def load_csm_1b_local(model_path: str, device: str = "cuda", audio_num_codebooks: int = 32):
     """
-    Load the CSM-1B model from a local .safetensors checkpoint with extreme optimizations.
+    Load the CSM-1B model from a local checkpoint with extreme optimizations and warmup.
     """
+    import torch
+    import platform
+    from functools import lru_cache
+    from generator import Generator, Model, ModelArgs
+
+    # Enable all CUDA optimizations
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = True
-    
+
     print(f"Loading CSM-1B model from local checkpoint '{model_path}' with extreme optimizations...")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-    
+
     config = ModelArgs(
         backbone_flavor="llama-1B",
         decoder_flavor="llama-100M",
         text_vocab_size=128256,
         audio_vocab_size=2051,
-        audio_num_codebooks=32,
+        audio_num_codebooks=audio_num_codebooks,
     )
 
-    model = Model(config)
-    
-    safetensor_path = os.path.join(model_path, "model.safetensors")
-    state_dict = load_file(safetensor_path, device=device)
-    model.load_state_dict(state_dict, strict=True)
-    
+    model = Model.from_pretrained(model_path)
+    model.eval()
+
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-    
-    if platform.system() == 'Windows':
-        model = torch.compile(model, fullgraph=True, backend='cudagraphs', mode='reduce-overhead')
-    else:
-        model = torch.compile(model, fullgraph=True,  mode='reduce-overhead')
+
+    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
+    model.forward = torch.compile(model.forward, mode="max-autotune")
 
     model.to(device=device, dtype=dtype)
-    
-    if torch.cuda.is_available():
-        try:
-            with torch.no_grad(), torch.amp.autocast(device_type='cuda',dtype=dtype):
-                dummy_input = torch.zeros(1, 10, 33, device=device, dtype=torch.long)
-                dummy_mask = torch.ones(1, 10, 33, device=device, dtype=torch.bool)
-                dummy_pos = torch.arange(10, device=device).unsqueeze(0)
-                _ = model(dummy_input, dummy_mask, dummy_pos)
-                torch.cuda.synchronize()
-        except Exception as e:
-            print(f"Warm-up failed, but continuing anyway: {e}")
 
     print("Model compilation complete. Creating generator...")
-    
+
     generator = Generator(model)
-    
-    generator._stream_buffer_size = 30 
-    
+    generator._stream_buffer_size = 20
+
+    # Setup tokenization caching
     generator._tokenization_cache = {}
-    
+
     original_tokenize_text = generator._tokenize_text_segment
-    
-    def patched_tokenize_text_segment(text, speaker):
-        cache_key = f"{speaker}:{text}"
-        if cache_key in generator._tokenization_cache:
-            return generator._tokenization_cache[cache_key]
-        
-        result = original_tokenize_text(text, speaker)
-        generator._tokenization_cache[cache_key] = result
-        return result
-    
-    generator._tokenize_text_segment = patched_tokenize_text_segment
-    
+
+    @lru_cache(maxsize=2048)
+    def cached_tokenize_text_segment(text_str, speaker_int):
+        return original_tokenize_text(text_str, speaker_int)
+
+    generator._tokenize_text_segment = lambda text, speaker: cached_tokenize_text_segment(text, speaker)
+
+    # Perform warmup
+    warmup_generator(generator)
+
     return generator
 
 
+def warmup_generator(gen: Generator, warmup_text: str = "Hello, this is just a quick test warmup itll speed it up.", speaker_id: int = 0):
+        print("Performing generator warmup...")
+        warmup_audio = next(gen.generate_stream(
+            text=warmup_text,
+            speaker=speaker_id,
+            context=[],
+            max_audio_length_ms=10000,
+            temperature=0.8,
+            topk=50
+        ))
+        del warmup_audio
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("Warmup complete.")
 def load_csm_1b(device: str = "cuda") -> Generator:
     """
     Load the CSM-1B model with extreme optimizations for real-time performance.
@@ -609,46 +626,32 @@ def load_csm_1b(device: str = "cuda") -> Generator:
     model = Model.from_pretrained("sesame/csm-1b")
     
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-    if platform.system() == 'Windows':
-        model = torch.compile(model, fullgraph=True, backend='cudagraphs', mode='reduce-overhead')
-    else:
-        model = torch.compile(model, fullgraph=True,  mode='reduce-overhead')
+    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
+    model.forward = torch.compile(model.forward, mode="max-autotune")
     model.to(device=device, dtype=dtype)
-    
-    
-    if torch.cuda.is_available():
-        try:
-            with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
-                dummy_input = torch.zeros(1, 10, 33, device=device, dtype=torch.long)
-                dummy_mask = torch.ones(1, 10, 33, device=device, dtype=torch.bool)
-                dummy_pos = torch.arange(10, device=device).unsqueeze(0)
-                _ = model(dummy_input, dummy_mask, dummy_pos)
-                torch.cuda.synchronize()
-        except Exception as e:
-            print(f"Warm-up failed, but continuing anyway: {e}")
     
     print("Model compilation complete. Creating generator...")
     
     generator = Generator(model)
     
-    generator._stream_buffer_size = 30
+    generator._stream_buffer_size = 20
     
     
     generator._tokenization_cache = {}
     
+    from functools import lru_cache
+
+    # Patch the tokenize method with caching
     original_tokenize_text = generator._tokenize_text_segment
+
+    @lru_cache(maxsize=2048)
+    def cached_tokenize_text_segment(text_str, speaker_int):
+        return original_tokenize_text(text_str, speaker_int)
+
+    generator._tokenize_text_segment = lambda text, speaker: cached_tokenize_text_segment(text, speaker)
     
-    def patched_tokenize_text_segment(text, speaker):
-        cache_key = f"{speaker}:{text}"
-        if cache_key in generator._tokenization_cache:
-            return generator._tokenization_cache[cache_key]
-        
-        result = original_tokenize_text(text, speaker)
-        generator._tokenization_cache[cache_key] = result
-        return result
-    
-    generator._tokenize_text_segment = patched_tokenize_text_segment
-    
+    warmup_generator(generator)
+
     return generator
 
 def stream_audio_to_wav(filename, sample_rate):
@@ -801,7 +804,6 @@ def generate_streaming_audio(
             except queue.Full:
                 pass  # Skip if queue is full to avoid blocking
     
-    # Enhanced pre-warming specifically for first chunk latency
     if torch.cuda.is_available():
         print("Preparing GPU for low-latency generation...")
         torch.cuda.empty_cache()
@@ -824,7 +826,7 @@ def generate_streaming_audio(
             process.nice(psutil.HIGH_PRIORITY_CLASS)
         else:
             # Use higher priority for Linux (-10 instead of 0)
-            process.nice(-10)  # -20 to 19, lower is higher priority
+            process.nice(-1)  # -20 to 19, lower is higher priority
     except (ImportError, PermissionError, psutil.AccessDenied):
         pass
     
