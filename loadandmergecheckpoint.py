@@ -14,6 +14,8 @@ from lora import (
     OUTPUT_DIR,
 )
 MODEL_NAME = "sesame/csm-1b"
+R=32
+APLHA=64
 
 def find_latest_checkpoint(dir_path):
     checkpoints = [
@@ -32,13 +34,13 @@ def load_checkpoint_and_merge():
     model = Model.from_pretrained(MODEL_NAME).to(DEVICE)
 
     print("Applying LoRA structure...")
-    from lora import replace_linear_with_lora  # make sure this import matches your file
-    model = replace_linear_with_lora(model, r=8, alpha=16, dropout=0.0)
+    from lora import replace_linear_with_lora
+    model = replace_linear_with_lora(model, r=R, alpha=APLHA, dropout=0.0)
 
     checkpoint_path = find_latest_checkpoint(OUTPUT_DIR)
     state = torch.load(os.path.join(checkpoint_path, "model.safetensors"), map_location=DEVICE)
 
-    model.load_state_dict(state["model_state_dict"])
+    model.load_state_dict(state["model_state_dict"], strict=False)
 
     print("Merging LoRA weights into base model...")
     merge_lora_weights(model)

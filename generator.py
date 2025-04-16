@@ -5,6 +5,9 @@ import time
 import queue
 import threading
 import platform
+from typing_extensions import OrderedDict
+import wave
+import numpy as np
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
@@ -12,13 +15,15 @@ from models import Model, ModelArgs
 from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
+import logging
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Segment:
     speaker: int
     text: str
-    # (num_samples,), sample_rate = 24_000
+    sample_rate = 24_000
     audio: torch.Tensor
 
 
@@ -26,7 +31,7 @@ def load_llama3_tokenizer():
     """
     https://github.com/huggingface/transformers/issues/22794#issuecomment-2092623992
     """
-    tokenizer_name = "meta-llama/Llama-3.2-1B"
+    tokenizer_name = "unsloth/Llama-3.2-1B"
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     bos = tokenizer.bos_token
     eos = tokenizer.eos_token
@@ -49,32 +54,51 @@ class Generator:
 
         mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
         mimi = loaders.get_mimi(mimi_weight, device=device)
-        mimi.set_num_codebooks(32)
+        
+        num_codebooks = model.config.audio_num_codebooks
+        mimi.set_num_codebooks(num_codebooks)
+        self._num_codebooks = num_codebooks
         self._audio_tokenizer = mimi
 
         self.sample_rate = mimi.sample_rate
         self.device = device
 
-        self._stream_buffer_size = 10
+        self._stream_buffer_size = 20
         self.max_seq_len = 2048
+        self._cache = OrderedDict()
+        self._text_token_cache = {}
+        torch.set_num_threads(16)
+        torch.cuda.set_per_process_memory_fraction(0.95)
 
     def _tokenize_text_segment(self, text: str, speaker: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        frame_tokens = []
-        frame_masks = []
+        """
+        Tokenize text segment with caching optimization for reduced latency.
+        """
+        # Check cache first
+        cache_key = f"{speaker}:{text}"
+        if not hasattr(self, '_text_token_cache'):
+            self._text_token_cache = {}
+        
+        if cache_key in self._text_token_cache:
+            return self._text_token_cache[cache_key]
 
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
-        text_frame = torch.zeros(len(text_tokens), 33).long()
-        text_frame_mask = torch.zeros(len(text_tokens), 33).bool()
-        text_frame[:, -1] = torch.tensor(text_tokens)
+        text_frame = torch.zeros(len(text_tokens), self._num_codebooks+1, dtype=torch.long, device=self.device)
+        text_frame_mask = torch.zeros(len(text_tokens), self._num_codebooks+1, dtype=torch.bool, device=self.device)
+        text_frame[:, -1] = torch.tensor(text_tokens, device=self.device)
         text_frame_mask[:, -1] = True
 
-        frame_tokens.append(text_frame.to(self.device))
-        frame_masks.append(text_frame_mask.to(self.device))
+        frame_tokens = [text_frame]
+        frame_masks = [text_frame_mask]
+        
+        result = (torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0))
+        
+        self._text_token_cache[cache_key] = result
+        
+        return result
 
-        return torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0)
 
     def _tokenize_audio(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert audio.ndim == 1, "Audio must be single channel"
 
         frame_tokens = []
         frame_masks = []
@@ -82,14 +106,18 @@ class Generator:
         # (K, T)
         audio = audio.to(self.device)
         audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
+        
+        # Limit to the number of codebooks set in MIMI
+        audio_tokens = audio_tokens[:self._num_codebooks, :]
+        
         # add EOS frame
         eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
         audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
 
-        audio_frame = torch.zeros(audio_tokens.size(1), 33).long().to(self.device)
-        audio_frame_mask = torch.zeros(audio_tokens.size(1), 33).bool().to(self.device)
-        audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
-        audio_frame_mask[:, :-1] = True
+        audio_frame = torch.zeros(audio_tokens.size(1), self._num_codebooks+1).long().to(self.device)
+        audio_frame_mask = torch.zeros(audio_tokens.size(1), self._num_codebooks+1).bool().to(self.device)
+        audio_frame[:, :self._num_codebooks] = audio_tokens.transpose(0, 1)
+        audio_frame_mask[:, :self._num_codebooks] = True
 
         frame_tokens.append(audio_frame)
         frame_masks.append(audio_frame_mask)
@@ -119,13 +147,13 @@ class Generator:
 
     
     def _decode_frames(self, frames):
-        """Decode a batch of frames into audio with optimized memory handling"""
         if not frames:
             return torch.tensor([])
         
-        audio = self._audio_tokenizer.decode(torch.stack(frames).permute(1, 2, 0)).squeeze(0).squeeze(0)
-
-        return audio 
+        # Only use first N codebooks for faster decoding
+        frames_reduced = [frame[:, :self._num_codebooks//2] for frame in frames]
+        audio = self._audio_tokenizer.decode(torch.stack(frames_reduced).permute(1, 2, 0)).squeeze(0).squeeze(0)
+        return audio
 
     @torch.inference_mode()
     def generate_stream(
@@ -137,7 +165,10 @@ class Generator:
         temperature: float = 0.7,
         topk: int = 30,
         on_chunk_generated: Optional[Callable[[torch.Tensor], None]] = None,
-    ) -> PyGenerator[torch.Tensor, None, None]:
+    ):
+        """
+        Generate audio in a streaming fashion, optimized for lower latency to first chunk.
+        """
         if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
@@ -149,6 +180,15 @@ class Generator:
         max_generation_len = int(max_audio_length_ms / 80)
 
         tokens, tokens_mask = [], []
+
+        initial_batch_size = 20
+        normal_batch_size = 20  
+        initial_buffer_size = 20
+        normal_buffer_size = 20
+        
+        batch_size = initial_batch_size
+        buffer_size = initial_buffer_size
+        first_chunk_delivered = False
 
         context_start = time.time()
         if context:
@@ -173,14 +213,8 @@ class Generator:
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        batch_size = 10
-        buffer_size = 30
+        expected_frame_count = buffer_size 
         frame_buffer = []
-
-        if torch.cuda.is_available():
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
 
         zeros_1_1 = torch.zeros(1, 1).long().to(self.device)
         zeros_mask_1_1 = torch.zeros(1, 1).bool().to(self.device)
@@ -205,7 +239,15 @@ class Generator:
                 for _ in range(batch_size_actual):
                     with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
                         sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-
+                        if torch.cuda.is_available() and hasattr(torch, "cuda") and hasattr(torch.cuda, "is_available"):
+                            try:
+                                torch.cuda.synchronize()  # Force sync before checking
+                                if sample.numel() == 0 or torch.isnan(sample).any():
+                                    print("Warning: Generated empty or NaN sample, stopping generation")
+                                    break
+                            except:
+                                print("Error checking tensor, stopping generation")
+                                break
                     if torch.all(sample == 0):
                         break
 
@@ -219,41 +261,85 @@ class Generator:
                 i += len(batch_samples)
 
                 if len(frame_buffer) >= buffer_size:
-                    frames_stacked = torch.stack(frame_buffer).permute(1, 2, 0)
+                    frames_to_process = frame_buffer[:expected_frame_count]
+                    
+                    # If we don't have enough frames, pad with zeros to match expected shape
+                    if len(frames_to_process) < expected_frame_count:
+                        # Create padding frames (zeros)
+                        padding_frames = [
+                            torch.zeros_like(frames_to_process[0]) 
+                            for _ in range(expected_frame_count - len(frames_to_process))
+                        ]
+                        
+                        # Combine actual frames with padding
+                        frames_to_process = frames_to_process + padding_frames
+                    
+                    frames_stacked = torch.stack(frames_to_process).permute(1, 2, 0)
                     audio_chunk = self._audio_tokenizer.decode(frames_stacked).squeeze(0).squeeze(0)
-                    frame_buffer = []
+                    
+                    # Keep remaining frames for next iteration
+                    frame_buffer = frame_buffer[expected_frame_count:]
+                    
+                    # Process and yield the chunk
+                    cpu_chunk = audio_chunk.cpu()
                     if on_chunk_generated:
-                        cpu_chunk = audio_chunk.cpu()
                         on_chunk_generated(cpu_chunk)
-                        yield cpu_chunk
-                    else:
-                        yield audio_chunk.cpu()
+                    
+                    # After first chunk is delivered, switch to normal batch and buffer sizes
+                    if not first_chunk_delivered:
+                        batch_size = normal_batch_size
+                        buffer_size = normal_buffer_size
+                        expected_frame_count = buffer_size
+                        first_chunk_delivered = True
+                    
+                    yield cpu_chunk
 
-                if i >= 100 and (i % 100 == 0):
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
+                    # Occasionally print progress and sync GPU
+                    if i >= 100 and (i % 100 == 0):
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        print(f"Generated {i} frames ({i * 0.08:.2f}s of audio)")
 
-        if frame_buffer:
-            frames_stacked = torch.stack(frame_buffer).permute(1, 2, 0)
-            audio_chunk = self._audio_tokenizer.decode(frames_stacked).squeeze(0).squeeze(0)
-            cpu_chunk = audio_chunk.cpu()
-            if on_chunk_generated:
-                on_chunk_generated(cpu_chunk)
-            yield cpu_chunk
+            # Process any remaining frames
+            if frame_buffer:
+                # Pad frame buffer if necessary
+                if len(frame_buffer) < expected_frame_count:
+                    padding_frames = [
+                        torch.zeros_like(frame_buffer[0]) 
+                        for _ in range(expected_frame_count - len(frame_buffer))
+                    ]
+                    frames_to_process = frame_buffer + padding_frames
+                else:
+                    # Otherwise take as many frames as possible that are a multiple of expected_frame_count
+                    frames_multiple = (len(frame_buffer) // expected_frame_count) * expected_frame_count
+                    frames_to_process = frame_buffer[:frames_multiple]
+                    
+                frames_stacked = torch.stack(frames_to_process).permute(1, 2, 0)
+                audio_chunk = self._audio_tokenizer.decode(frames_stacked).squeeze(0).squeeze(0)
+                
+                # Determine actual audio length (before padding)
+                actual_frames_percentage = min(len(frame_buffer), expected_frame_count) / expected_frame_count
+                actual_samples = int(audio_chunk.shape[0] * actual_frames_percentage)
+                
+                # Return only the non-padded portion of audio if we added padding
+                if len(frame_buffer) < expected_frame_count:
+                    audio_chunk = audio_chunk[:actual_samples]
+                    
+                cpu_chunk = audio_chunk.cpu()
+                if on_chunk_generated:
+                    on_chunk_generated(cpu_chunk)
+                yield cpu_chunk
 
-        if torch.cuda.is_available():
-            end_event.record()
-            torch.cuda.synchronize()
-            gpu_time = start_event.elapsed_time(end_event) / 1000.0
+            # Print final performance metrics
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             total_time = time.time() - generation_start
             frames_generated = i
             audio_seconds = frames_generated * 0.08
             rtf = total_time / audio_seconds if audio_seconds > 0 else float('inf')
-            print(f"GPU processing time: {gpu_time:.2f}s, Total time: {total_time:.2f}s")
+            print(f"Total time: {total_time:.2f}s")
             print(f"Generated {frames_generated} frames ({audio_seconds:.2f}s of audio)")
             print(f"Real-time factor: {rtf:.3f}x (target: <1.0)")
-
-
 
     @torch.inference_mode()
     def generate(
@@ -262,18 +348,63 @@ class Generator:
         speaker: int,
         context: List[Segment],
         max_audio_length_ms: float = 90_000,
-        temperature: float = 0.7,
-        topk: int = 30,
+        temperature: float = 0.8,
+        topk: int = 40,
         stream: bool = False,
-    ) -> torch.Tensor:
+        output_file: Optional[str] = None,
+    ):
+        """
+        Generate audio with optional streaming and file output.
+        
+        Args:
+            text: Text to generate audio for
+            speaker: Speaker ID
+            context: List of context segments
+            max_audio_length_ms: Maximum audio length in milliseconds
+            temperature: Sampling temperature
+            topk: Top-k sampling parameter
+            stream: Whether to use streaming generation
+            output_file: If provided and stream=True, output will be saved to this file
+        
+        Returns:
+            torch.Tensor: Generated audio tensor
+        """
         if stream:
-            audio_chunks = []
-            for chunk in self.generate_stream(text, speaker, context, max_audio_length_ms, temperature, topk):
-                audio_chunks.append(chunk)
+            if output_file:
+                # Setup streaming to file
+                write_chunk, close_wav = stream_audio_to_wav(output_file, self.sample_rate)
+                
+                # Collect chunks while streaming to file
+                audio_chunks = []
+                t1 = time.time()
+                
+                for i, chunk in enumerate(self.generate_stream(
+                    text, speaker, context, max_audio_length_ms, temperature, topk
+                )):
+                    # Write to file
+                    write_chunk(chunk)
+                    # Store for return value
+                    audio_chunks.append(chunk)
+                    
+                    # Occasionally print progress
+                    if i % 5 == 0:
+                        print(f"Part {i+1} available after {time.time() - t1:.4f}s")
+                        t1 = time.time()
+                
+                # Close file
+                close_wav()
+                print(f"Streaming complete, WAV file saved to {output_file}")
+            else:
+                # Just collect chunks without file output
+                audio_chunks = []
+                for chunk in self.generate_stream(text, speaker, context, max_audio_length_ms, temperature, topk):
+                    audio_chunks.append(chunk)
+            
             if not audio_chunks:
                 return torch.tensor([])
             return torch.cat(audio_chunks)
 
+        # Non-streaming generation remains unchanged
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -321,8 +452,6 @@ class Generator:
             return torch.tensor([])
 
         return self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
-
-
 
 class AudioStreamWriter:
     """
@@ -403,81 +532,81 @@ import torch
 from models import Model, ModelArgs
 from generator import Generator
 
-def load_csm_1b_local(model_path: str, device: str = "cuda"):
+def load_csm_1b_local(model_path: str, device: str = "cuda", audio_num_codebooks: int = 32):
     """
-    Load the CSM-1B model from a local .safetensors checkpoint with extreme optimizations.
+    Load the CSM-1B model from a local checkpoint with extreme optimizations and warmup.
     """
+    import torch
+    import platform
+    from functools import lru_cache
+    from generator import Generator, Model, ModelArgs
+
+    # Enable all CUDA optimizations
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = True
-    
+
     print(f"Loading CSM-1B model from local checkpoint '{model_path}' with extreme optimizations...")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-    
+
     config = ModelArgs(
         backbone_flavor="llama-1B",
         decoder_flavor="llama-100M",
         text_vocab_size=128256,
         audio_vocab_size=2051,
-        audio_num_codebooks=32,
+        audio_num_codebooks=audio_num_codebooks,
     )
 
-    model = Model(config)
-    
-    safetensor_path = os.path.join(model_path, "model.safetensors")
-    state_dict = load_file(safetensor_path, device=device)
-    model.load_state_dict(state_dict, strict=True)
-    
+    model = Model.from_pretrained(model_path)
+    model.eval()
+
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-    
-    model = torch.compile(
-        model,
-        dynamic=True,
-        fullgraph=True,
-        backend='cudagraphs'
-    )
-    
+
+    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
+    model.forward = torch.compile(model.forward, mode="max-autotune")
+
     model.to(device=device, dtype=dtype)
-    
-    if torch.cuda.is_available():
-        try:
-            with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
-                dummy_input = torch.zeros(1, 10, 33, device=device, dtype=torch.long)
-                dummy_mask = torch.ones(1, 10, 33, device=device, dtype=torch.bool)
-                dummy_pos = torch.arange(10, device=device).unsqueeze(0)
-                _ = model(dummy_input, dummy_mask, dummy_pos)
-                torch.cuda.synchronize()
-        except Exception as e:
-            print(f"Warm-up failed, but continuing anyway: {e}")
 
     print("Model compilation complete. Creating generator...")
-    
+
     generator = Generator(model)
-    
-    generator._stream_buffer_size = 30 
-    
+    generator._stream_buffer_size = 20
+
+    # Setup tokenization caching
     generator._tokenization_cache = {}
-    
+
     original_tokenize_text = generator._tokenize_text_segment
-    
-    def patched_tokenize_text_segment(text, speaker):
-        cache_key = f"{speaker}:{text}"
-        if cache_key in generator._tokenization_cache:
-            return generator._tokenization_cache[cache_key]
-        
-        result = original_tokenize_text(text, speaker)
-        generator._tokenization_cache[cache_key] = result
-        return result
-    
-    generator._tokenize_text_segment = patched_tokenize_text_segment
-    
+
+    @lru_cache(maxsize=2048)
+    def cached_tokenize_text_segment(text_str, speaker_int):
+        return original_tokenize_text(text_str, speaker_int)
+
+    generator._tokenize_text_segment = lambda text, speaker: cached_tokenize_text_segment(text, speaker)
+
+    # Perform warmup
+    warmup_generator(generator)
+
     return generator
 
 
+def warmup_generator(gen: Generator, warmup_text: str = "Hello, this is just a quick test warmup itll speed it up.", speaker_id: int = 0):
+        print("Performing generator warmup...")
+        warmup_audio = next(gen.generate_stream(
+            text=warmup_text,
+            speaker=speaker_id,
+            context=[],
+            max_audio_length_ms=10000,
+            temperature=0.8,
+            topk=50
+        ))
+        del warmup_audio
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("Warmup complete.")
 def load_csm_1b(device: str = "cuda") -> Generator:
     """
     Load the CSM-1B model with extreme optimizations for real-time performance.
@@ -497,51 +626,72 @@ def load_csm_1b(device: str = "cuda") -> Generator:
     model = Model.from_pretrained("sesame/csm-1b")
     
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-    
-    model = torch.compile(
-        model,
-        dynamic=True,
-        fullgraph=True,
-        backend='cudagraphs'
-    )
-    
+    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
+    model.forward = torch.compile(model.forward, mode="max-autotune")
     model.to(device=device, dtype=dtype)
-    
-    
-    if torch.cuda.is_available():
-        try:
-            with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
-                dummy_input = torch.zeros(1, 10, 33, device=device, dtype=torch.long)
-                dummy_mask = torch.ones(1, 10, 33, device=device, dtype=torch.bool)
-                dummy_pos = torch.arange(10, device=device).unsqueeze(0)
-                _ = model(dummy_input, dummy_mask, dummy_pos)
-                torch.cuda.synchronize()
-        except Exception as e:
-            print(f"Warm-up failed, but continuing anyway: {e}")
     
     print("Model compilation complete. Creating generator...")
     
     generator = Generator(model)
     
-    generator._stream_buffer_size = 30
+    generator._stream_buffer_size = 20
     
     
     generator._tokenization_cache = {}
     
+    from functools import lru_cache
+
+    # Patch the tokenize method with caching
     original_tokenize_text = generator._tokenize_text_segment
+
+    @lru_cache(maxsize=2048)
+    def cached_tokenize_text_segment(text_str, speaker_int):
+        return original_tokenize_text(text_str, speaker_int)
+
+    generator._tokenize_text_segment = lambda text, speaker: cached_tokenize_text_segment(text, speaker)
     
-    def patched_tokenize_text_segment(text, speaker):
-        cache_key = f"{speaker}:{text}"
-        if cache_key in generator._tokenization_cache:
-            return generator._tokenization_cache[cache_key]
-        
-        result = original_tokenize_text(text, speaker)
-        generator._tokenization_cache[cache_key] = result
-        return result
-    
-    generator._tokenize_text_segment = patched_tokenize_text_segment
-    
+    warmup_generator(generator)
+
     return generator
+
+def stream_audio_to_wav(filename, sample_rate):
+    """
+    Initialize a WAV writer for streaming audio chunks.
+    
+    Args:
+        filename: Output WAV file path
+        sample_rate: Audio sample rate in Hz
+    
+    Returns:
+        tuple: (write_chunk, close) functions for writing audio data and closing the file
+    """
+    # Create a WAV file with the proper header
+    wav_file = wave.open(filename, 'wb')
+    wav_file.setnchannels(1)  # Mono
+    wav_file.setsampwidth(2)  # 16-bit
+    wav_file.setframerate(sample_rate)
+    
+    def write_chunk(audio_chunk):
+        # Convert tensor to numpy and then to int16 PCM format
+        if isinstance(audio_chunk, torch.Tensor):
+            # Ensure it's on CPU and detached before converting to numpy
+            audio_np = audio_chunk.detach().cpu().numpy()
+        else:
+            audio_np = audio_chunk
+            
+        # Normalize if needed (assuming audio is in [-1, 1] range)
+        if audio_np.max() <= 1.0 and audio_np.min() >= -1.0:
+            audio_int = (audio_np * 32767).astype(np.int16)
+        else:
+            audio_int = audio_np.astype(np.int16)
+            
+        # Write to WAV file
+        wav_file.writeframes(audio_int.tobytes())
+    
+    def close():
+        wav_file.close()
+        
+    return write_chunk, close
 
 
 def generate_streaming_audio(
@@ -556,290 +706,202 @@ def generate_streaming_audio(
     play_audio: bool = False,
 ):
     """
-    Generate audio with ultra-optimized streaming output for real-time chat.
+    Generate audio with streaming output and comprehensive timing metrics.
+    Optimized for reduced first-chunk latency.
     """
-    # Use direct file writing to minimize memory usage
-    import os
-    from threading import Lock
+    # Initialize the streaming WAV writer
+    write_chunk, close_wav = stream_audio_to_wav(output_file, generator.sample_rate)
     
-    # Set environment variables for better performance
-    os.environ['OMP_NUM_THREADS'] = '1'  # Prevent OpenMP from using too many threads
-    
-    # Class to handle audio file writing with direct disk operations
-    class FastAudioStreamWriter:
-        def __init__(self, filename, sample_rate):
-            self.filename = filename
-            self.sample_rate = sample_rate
-            self.temp_files = []
-            self.chunk_count = 0
-            self.lock = Lock()
-            self.total_samples = 0
-            
-            # Create temp directory if needed
-            import tempfile
-            self.temp_dir = tempfile.mkdtemp()
-            
-        def add_chunk(self, chunk):
-            """Write chunk directly to disk to minimize memory usage"""
-            with self.lock:
-                # Save chunk to temporary file
-                temp_file = os.path.join(self.temp_dir, f"chunk_{self.chunk_count}.wav")
-                torchaudio.save(temp_file, chunk.unsqueeze(0).cpu(), self.sample_rate)
-                self.temp_files.append(temp_file)
-                self.total_samples += chunk.size(0)
-                self.chunk_count += 1
-        
-        def write_file(self):
-            """Combine all chunk files into final output"""
-            if not self.temp_files:
-                return
-                
-            import subprocess
-            
-            # Use ffmpeg for fast concatenation if available
-            try:
-                with open(os.path.join(self.temp_dir, "file_list.txt"), "w") as f:
-                    for temp_file in self.temp_files:
-                        f.write(f"file '{temp_file}'\n")
-                
-                subprocess.run([
-                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", os.path.join(self.temp_dir, "file_list.txt"),
-                    "-c", "copy", self.filename
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                # Clean up temp files
-                for temp_file in self.temp_files:
-                    try:
-                        os.remove(temp_file)
-                    except:
-                        pass
-                os.remove(os.path.join(self.temp_dir, "file_list.txt"))
-                os.rmdir(self.temp_dir)
-                    
-            except (subprocess.SubprocessError, FileNotFoundError):
-                # Fall back to manual concatenation if ffmpeg not available
-                import numpy as np
-                import wave
-                
-                with wave.open(self.filename, 'wb') as outfile:
-                    outfile.setnchannels(1)
-                    outfile.setsampwidth(2)  # 16-bit audio
-                    outfile.setframerate(self.sample_rate)
-                    
-                    for temp_file in self.temp_files:
-                        with wave.open(temp_file, 'rb') as infile:
-                            outfile.writeframes(infile.readframes(infile.getnframes()))
-                        
-                        # Clean up temp file
-                        try:
-                            os.remove(temp_file)
-                        except:
-                            pass
-                            
-                    os.rmdir(self.temp_dir)
-    
-    writer = FastAudioStreamWriter(output_file, generator.sample_rate)
-    
-    # Use ring buffer for audio playback to decouple generation from playback
-    import collections
-    audio_ring_buffer = collections.deque(maxlen=50)  # Larger buffer to prevent underruns
+    # Set up audio playback if requested
+    audio_queue = queue.Queue(maxsize=100) if play_audio else None
     stop_event = threading.Event()
     
     if play_audio:
         try:
             import sounddevice as sd
-            import numpy as np
             
-            class AudioPlayer:
-                def __init__(self, sample_rate):
-                    self.sample_rate = sample_rate
-                    self.buffer = np.zeros(0)
-                    self.lock = threading.Lock()
-                    self.stream = None
-                    self.active = False
-                    # Add extra padding at the end to ensure all audio is played
-                    self.eos_padding = 0.5  # 500ms of silence at the end
-                    self.done_playing = threading.Event()
+            # Get available sample rates for default output device to check compatibility
+            device_info = sd.query_devices(kind='output')
+            supported_rate = device_info.get('default_samplerate', 44100)
+            need_resampling = abs(supported_rate - generator.sample_rate) > 100
+            
+            if need_resampling:
+                try:
+                    # Use resampling if sample rate doesn't match
+                    import librosa
+                    print(f"Resampling from {generator.sample_rate}Hz to {int(supported_rate)}Hz for playback")
                     
-                def add_audio(self, chunk):
-                    """Add audio to playback buffer"""
-                    np_chunk = chunk.numpy()
-                    with self.lock:
-                        if self.buffer.size == 0:
-                            self.buffer = np_chunk
-                        else:
-                            self.buffer = np.concatenate([self.buffer, np_chunk])
-                
-                def start(self):
-                    """Start audio playback"""
-                    self.active = True
-                    self.done_playing.clear()
-                    # Use a larger blocksize for better performance but not too large to avoid cutting off end
-                    blocksize = 2048
-                    
-                    self.stream = sd.OutputStream(
-                        samplerate=self.sample_rate,
-                        channels=1,
-                        callback=self._audio_callback,
-                        finished_callback=self._stream_finished,
-                        blocksize=blocksize
-                    )
-                    self.stream.start()
-                
-                def _audio_callback(self, outdata, frames, time, status):
-                    """Callback to fill audio buffer"""
-                    with self.lock:
-                        if self.buffer.size > 0:
-                            if self.buffer.size >= frames:
-                                outdata[:] = self.buffer[:frames].reshape(-1, 1)
-                                self.buffer = self.buffer[frames:]
-                            else:
-                                # Fill available data and zero-pad the rest
-                                outdata[:self.buffer.size] = self.buffer.reshape(-1, 1)
-                                outdata[self.buffer.size:] = 0
-                                self.buffer = np.zeros(0)
-                        else:
-                            outdata[:] = 0
-                
-                def _stream_finished(self):
-                    """Handle stream completion"""
-                    with self.lock:
-                        # Only mark as inactive if buffer is truly empty
-                        if self.buffer.size == 0:
-                            self.active = False
-                            self.done_playing.set()
-                
-                def add_end_padding(self):
-                    """Add silence padding at the end to ensure all audio is played"""
-                    with self.lock:
-                        # Add half a second of silence (zeros) to ensure the last utterance plays fully
-                        padding_samples = int(self.sample_rate * self.eos_padding)
-                        padding = np.zeros(padding_samples)
-                        
-                        if self.buffer.size == 0:
-                            self.buffer = padding
-                        else:
-                            self.buffer = np.concatenate([self.buffer, padding])
-                
-                def stop(self, wait=True):
-                    """Stop playback"""
-                    self.add_end_padding()  # Add padding before stopping
-                    
-                    if wait and self.active:
-                        # Wait for buffer to be empty before stopping
+                    def audio_playback_worker():
+                        while not stop_event.is_set() or not audio_queue.empty():
+                            try:
+                                chunk = audio_queue.get(timeout=0.5)
+                                audio_np = chunk.numpy() if isinstance(chunk, torch.Tensor) else chunk
+                                # Resample to device's supported rate
+                                resampled = librosa.resample(
+                                    audio_np, 
+                                    orig_sr=generator.sample_rate, 
+                                    target_sr=int(supported_rate)
+                                )
+                                sd.play(resampled, supported_rate, blocking=True)
+                                audio_queue.task_done()
+                            except queue.Empty:
+                                pass
+                            except Exception as e:
+                                print(f"Playback error: {e}")
+                except ImportError:
+                    print("Librosa not found. Using direct playback which may cause sample rate warnings.")
+                    need_resampling = False
+            
+            if not need_resampling:
+                def audio_playback_worker():
+                    while not stop_event.is_set() or not audio_queue.empty():
                         try:
-                            # Wait with timeout to prevent hanging
-                            self.done_playing.wait(timeout=5.0)
-                        except:
+                            chunk = audio_queue.get(timeout=0.5)
+                            audio_np = chunk.numpy() if isinstance(chunk, torch.Tensor) else chunk
+                            sd.play(audio_np, generator.sample_rate, blocking=True)
+                            audio_queue.task_done()
+                        except queue.Empty:
                             pass
-                    
-                    if self.stream:
-                        self.stream.stop()
-                        self.stream.close()
-                    
-                    self.active = False
+                        except Exception as e:
+                            print(f"Playback error: {e}")
             
-            # Create and start audio player
-            player = AudioPlayer(generator.sample_rate)
-            player.start()
-            
-            def audio_worker():
-                """Worker thread to feed audio to player"""
-                buffer_underrun_count = 0
-                
-                while not stop_event.is_set() or audio_ring_buffer:
-                    if audio_ring_buffer:
-                        chunk = audio_ring_buffer.popleft()
-                        player.add_audio(chunk)
-                        buffer_underrun_count = 0
-                    else:
-                        # Short sleep if buffer is empty
-                        time.sleep(0.01)
-                        buffer_underrun_count += 1
-                        
-                        # If we've reached the end of generation (stop event is set)
-                        # and we've had buffer underruns for a while, add end padding
-                        if stop_event.is_set() and buffer_underrun_count > 50:  # ~500ms of checking
-                            player.add_end_padding()
-                            buffer_underrun_count = 0
-                
-                # Make sure we wait for all audio to finish playing
-                player.stop(wait=True)
-            
-            # Start audio worker thread
-            player_thread = threading.Thread(target=audio_worker, daemon=True)
-            player_thread.start()
+            # Start playback thread
+            playback_thread = threading.Thread(target=audio_playback_worker, daemon=True)
+            playback_thread.start()
             
         except ImportError:
-            print("sounddevice library not found. Install with 'pip install sounddevice' to enable real-time playback.")
+            print("sounddevice library not found. Install with 'pip install sounddevice' for real-time playback.")
             play_audio = False
     
-    # Define callback for handling generated chunks
-    def on_chunk_generated(chunk):
-        writer.add_chunk(chunk)
-        if play_audio:
-            audio_ring_buffer.append(chunk)
+    # Timing metrics
+    chunk_times = []
+    latency_to_first_chunk = None
+    total_audio_duration = 0
+    chunk_count = 0
     
-    # Pre-warm GPU and ensure minimal background activity
+    # Function to handle each generated chunk
+    def on_chunk_generated(chunk):
+        nonlocal chunk_count, latency_to_first_chunk, total_audio_duration
+        
+        current_time = time.time()
+        if chunk_count == 0:
+            latency_to_first_chunk = current_time - start_time
+            print(f"First chunk latency: {latency_to_first_chunk*1000:.1f}ms")
+            
+        # Save chunk to WAV file
+        write_chunk(chunk)
+        
+        # Update metrics
+        chunk_count += 1
+        chunk_duration = len(chunk) / generator.sample_rate
+        total_audio_duration += chunk_duration
+        chunk_times.append(current_time)
+        
+        # Send to audio player if enabled
+        if play_audio and audio_queue is not None:
+            try:
+                audio_queue.put(chunk, timeout=0.1)
+            except queue.Full:
+                pass  # Skip if queue is full to avoid blocking
+    
     if torch.cuda.is_available():
-        # Run a small warm-up computation
-        dummy_tensor = torch.ones(1, 1, device=generator.device)
-        for _ in range(10):
-            _ = dummy_tensor * 2.0
+        print("Preparing GPU for low-latency generation...")
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Pre-allocate some GPU memory to avoid allocation during generation
+        dummy_tensors = []
+        for i in range(5):
+            dummy = torch.ones((100, 100), device=generator.device)
+            dummy = dummy + 1.0  # Force computation
+            dummy_tensors.append(dummy)  # Keep reference to prevent deallocation
+            
         torch.cuda.synchronize()
     
-    print("Generating audio with streaming...")
-    start_time = time.time()
-    
+    # Set process priority to improve performance - use higher priority
     try:
         import psutil
         process = psutil.Process()
         if platform.system() == 'Windows':
             process.nice(psutil.HIGH_PRIORITY_CLASS)
         else:
-            # Use a non-negative value for Linux when not running as root
-            process.nice(0)  # Normal priority
+            # Use higher priority for Linux (-10 instead of 0)
+            process.nice(-1)  # -20 to 19, lower is higher priority
     except (ImportError, PermissionError, psutil.AccessDenied):
-        # Make sure to catch psutil.AccessDenied as well
         pass
     
-    # Generate audio chunks
-    chunk_count = 0
-    for _ in generator.generate_stream(
-        text=text,
-        speaker=speaker,
-        context=context,
-        max_audio_length_ms=max_audio_length_ms,
-        temperature=temperature,
-        topk=topk,
-        on_chunk_generated=on_chunk_generated
-    ):
-        chunk_count += 1
-        # Minimize logging to reduce overhead
-        if chunk_count % 10 == 0:
-            elapsed = time.time() - start_time
-            print(f"Generated {chunk_count} chunks in {elapsed:.2f}s ({chunk_count / elapsed:.1f} chunks/sec)")
+    print(f"Starting audio generation for: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+    start_time = time.time()
+    
+    # Generate audio in chunks, catching possible errors
+    frame_count = 0
+    try:
+        for audio_chunk in generator.generate_stream(
+            text=text,
+            speaker=speaker,
+            context=context,
+            max_audio_length_ms=max_audio_length_ms,
+            temperature=temperature,
+            topk=topk,
+            on_chunk_generated=on_chunk_generated
+        ):
+            frame_count += 1
+            
+            # Print timing info less frequently to reduce overhead
+            if frame_count % 10 == 0:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                if total_audio_duration > 0:
+                    rtf = elapsed / total_audio_duration
+                    remaining_time = (max_audio_length_ms/1000 - total_audio_duration) * rtf
+                    print(f"Chunk {chunk_count}: {total_audio_duration:.1f}s audio in {elapsed:.1f}s "
+                          f"(RTF: {rtf:.2f}x, Est. remaining: {remaining_time:.1f}s)")
+    except Exception as e:
+        print(f"Error during audio generation: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Release dummy tensors to free memory
+    if 'dummy_tensors' in locals():
+        del dummy_tensors
     
     # Signal audio worker that generation is complete
     stop_event.set()
     
-    # Write final file
-    writer.write_file()
+    # Close WAV file
+    close_wav()
     
-    # Wait for audio playback to complete
-    if play_audio:
+    # Wait for audio playback to complete if enabled
+    if play_audio and 'playback_thread' in locals():
         print("Waiting for audio playback to complete...")
-        try:
-            player_thread.join(timeout=10.0)  # Longer timeout to ensure audio completes
-        except:
-            pass
+        playback_thread.join(timeout=5.0)
     
-    # Calculate performance metrics
-    elapsed_time = time.time() - start_time
-    audio_duration_seconds = chunk_count * generator._stream_buffer_size * 80 / 1000.0
-    rtf = elapsed_time / audio_duration_seconds if audio_duration_seconds > 0 else float('inf')
+    # Calculate and print detailed performance metrics
+    end_time = time.time()
+    total_elapsed = end_time - start_time
     
-    print(f"Audio generation completed in {elapsed_time:.2f} seconds")
-    print(f"Generated {audio_duration_seconds:.2f} seconds of audio")
+    # Calculate inter-chunk latency
+    if len(chunk_times) > 1:
+        inter_chunk_latencies = [chunk_times[i] - chunk_times[i-1] for i in range(1, len(chunk_times))]
+        avg_inter_chunk_latency = sum(inter_chunk_latencies) / len(inter_chunk_latencies)
+        max_inter_chunk_latency = max(inter_chunk_latencies) if inter_chunk_latencies else 0
+        min_inter_chunk_latency = min(inter_chunk_latencies) if inter_chunk_latencies else 0
+    else:
+        avg_inter_chunk_latency = max_inter_chunk_latency = min_inter_chunk_latency = 0
+    
+    rtf = total_elapsed / total_audio_duration if total_audio_duration > 0 else float('inf')
+    
+    print("\n" + "="*50)
+    print("AUDIO GENERATION PERFORMANCE METRICS")
+    print("="*50)
+    print(f"First chunk latency: {latency_to_first_chunk*1000:.1f}ms")
+    print(f"Total generation time: {total_elapsed:.2f}s")
+    print(f"Audio duration: {total_audio_duration:.2f}s")
     print(f"Real-time factor (RTF): {rtf:.3f}x (target: <1.0)")
+    print(f"Number of chunks: {chunk_count}")
+    print(f"Average chunk size: {(total_audio_duration/chunk_count)*1000:.1f}ms") if chunk_count > 0 else None
+    print(f"Average inter-chunk latency: {avg_inter_chunk_latency*1000:.1f}ms")
+    print(f"Min/Max inter-chunk latency: {min_inter_chunk_latency*1000:.1f}ms / {max_inter_chunk_latency*1000:.1f}ms")
+    print(f"Chunks per second: {chunk_count/total_elapsed:.2f}")
+    print(f"Output file: {output_file}")
+    print("="*50)

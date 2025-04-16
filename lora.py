@@ -12,11 +12,15 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
 from safetensors.torch import save_file
-
+import csv
 from models import Model
 from moshi.models import loaders
 from huggingface_hub import hf_hub_download
 from tokenizers.processors import TemplateProcessing
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg') 
+import torch.nn as nn
 
 # Setup logging
 logging.basicConfig(
@@ -28,10 +32,12 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DIR = "audio_data"
 OUTPUT_DIR = "finetuned_model"
-NUM_EPOCHS = 5
+NUM_EPOCHS = 10
 BATCH_SIZE = 1
-GRADIENT_ACCUMULATION_STEPS = 32
-LEARNING_RATE = 2e-6
+GRADIENT_ACCUMULATION_STEPS = 16
+LEARNING_RATE = 1e-6
+MAX_GRAD_NORM = 0.5
+NUM_CYCLES = 1.0
 USE_WANDB = False
 SEED = 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -41,8 +47,246 @@ SPEAKER_ID = 0
 MODEL_NAME = "sesame/csm-1b"
 TRANSCRIPTION_MODEL = "openai/whisper-base"
 MAX_AUDIO_FILES = 0
+R=32
+APLHA=64
 
-import torch.nn as nn
+class TrainingVisualizer:
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        self.epochs = []
+        self.losses = []
+        self.val_losses = []  # Added validation losses
+        self.learning_rates = []
+        self.steps = []
+        
+        # Create the figure and axes only once
+        self.fig, self.axes = plt.subplots(3, 1, figsize=(10, 15))  # Increased figure size for 3 plots
+        self.fig.suptitle('CSM Finetuning Progress', fontsize=16)
+        
+        # Setup training loss plot
+        self.axes[0].set_title('Training Loss')
+        self.axes[0].set_xlabel('Epoch')
+        self.axes[0].set_ylabel('Loss')
+        self.axes[0].grid(True, linestyle='--', alpha=0.7)
+        
+        # Setup validation loss plot
+        self.axes[1].set_title('Training vs Validation Loss')
+        self.axes[1].set_xlabel('Epoch')
+        self.axes[1].set_ylabel('Loss')
+        self.axes[1].grid(True, linestyle='--', alpha=0.7)
+        
+        # Setup learning rate plot
+        self.axes[2].set_title('Learning Rate')
+        self.axes[2].set_xlabel('Epoch')
+        self.axes[2].set_ylabel('Learning Rate')
+        self.axes[2].grid(True, linestyle='--', alpha=0.7)
+    
+    def update(self, epoch, step, loss, lr, val_loss=None):
+        """Update the metrics and redraw the plot"""
+        self.epochs.append(epoch)
+        self.steps.append(step)
+        self.losses.append(loss)
+        self.learning_rates.append(lr)
+        
+        # Add validation loss if provided, otherwise use None
+        if val_loss is not None:
+            self.val_losses.append(val_loss)
+        elif len(self.val_losses) > 0:
+            # If we have validation losses but none provided this time, use the last one
+            self.val_losses.append(self.val_losses[-1])
+        else:
+            # If we've never had validation losses, use None
+            self.val_losses.append(None)
+        
+        # Update training loss plot
+        self.axes[0].clear()
+        self.axes[0].plot(self.epochs, self.losses, 'b-')
+        self.axes[0].set_title('Training Loss')
+        self.axes[0].set_xlabel('Epoch')
+        self.axes[0].set_ylabel('Loss')
+        self.axes[0].grid(True, linestyle='--', alpha=0.7)
+        
+        # Update validation loss plot
+        self.axes[1].clear()
+        self.axes[1].plot(self.epochs, self.losses, 'b-', label='Training')
+        
+        # If we have validation losses, plot them
+        if any(x is not None for x in self.val_losses):
+            # Filter out None values
+            val_epochs = [e for e, v in zip(self.epochs, self.val_losses) if v is not None]
+            val_loss_values = [v for v in self.val_losses if v is not None]
+            if val_epochs:
+                self.axes[1].plot(val_epochs, val_loss_values, 'r-', label='Validation')
+                self.axes[1].legend()
+        
+        self.axes[1].set_title('Training vs Validation Loss')
+        self.axes[1].set_xlabel('Epoch')
+        self.axes[1].set_ylabel('Loss')
+        self.axes[1].grid(True, linestyle='--', alpha=0.7)
+        
+        # Update learning rate plot
+        self.axes[2].clear()
+        self.axes[2].plot(self.epochs, self.learning_rates, 'g-')
+        self.axes[2].set_title('Learning Rate')
+        self.axes[2].set_xlabel('Epoch')
+        self.axes[2].set_ylabel('Learning Rate')
+        self.axes[2].grid(True, linestyle='--', alpha=0.7)
+        
+        # Calculate convergence metrics
+        min_loss = min(self.losses)
+        min_loss_epoch = self.epochs[self.losses.index(min_loss)]
+        
+        # Check for potential convergence stall
+        recent_window = 10  # Look at last 10 steps
+        if len(self.losses) > recent_window:
+            recent_losses = self.losses[-recent_window:]
+            loss_std = np.std(recent_losses)
+            loss_change = (recent_losses[0] - recent_losses[-1]) / recent_losses[0] if recent_losses[0] != 0 else 0
+            
+            convergence_status = ""
+            if loss_std < 0.001 and loss_change < 0.01:
+                convergence_status = "STALLED: Loss not improving significantly"
+            elif min_loss == self.losses[-1]:
+                convergence_status = "IMPROVING: New best loss!"
+            elif self.losses[-1] < self.losses[-2]:
+                convergence_status = "IMPROVING: Loss decreasing"
+            else:
+                convergence_status = "FLUCTUATING: Loss increased"
+            
+            # Add convergence status to title
+            self.fig.suptitle(f'CSM Finetuning Progress - {convergence_status}\n' + 
+                            f'Epoch: {epoch:.2f}, Loss: {loss:.4f}, LR: {lr:.8f}\n' + 
+                            f'Best: {min_loss:.4f} at epoch {min_loss_epoch:.2f}', fontsize=12)
+        else:
+            self.fig.suptitle(f'CSM Finetuning Progress\n' + 
+                            f'Epoch: {epoch:.2f}, Loss: {loss:.4f}, LR: {lr:.8f}\n' + 
+                            f'Best: {min_loss:.4f} at epoch {min_loss_epoch:.2f}', fontsize=12)
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.92])  # Adjust for the larger title
+        
+        # Save the figure
+        plot_path = os.path.join(self.output_dir, 'training_progress.png')
+        self.fig.savefig(plot_path)
+        
+    def finalize(self):
+        """Create a final, more detailed visualization when training completes"""
+        # Create a new figure for the final plot
+        final_fig = plt.figure(figsize=(12, 16))
+        gs = plt.GridSpec(4, 2, figure=final_fig)
+        
+        # Plot 1: Loss vs Steps
+        ax1 = final_fig.add_subplot(gs[0, :])
+        ax1.plot(self.steps, self.losses, 'b-', linewidth=2)
+        ax1.set_title('Training Loss vs Steps', fontsize=14)
+        ax1.set_xlabel('Steps')
+        ax1.set_ylabel('Loss')
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 2: Loss vs Epochs
+        ax2 = final_fig.add_subplot(gs[1, 0])
+        ax2.plot(self.epochs, self.losses, 'r-', linewidth=2)
+        ax2.set_title('Training Loss vs Epochs', fontsize=14)
+        ax2.set_xlabel('Epochs')
+        ax2.set_ylabel('Loss')
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 3: Learning Rate vs Steps
+        ax3 = final_fig.add_subplot(gs[1, 1])
+        ax3.plot(self.steps, self.learning_rates, 'g-', linewidth=2)
+        ax3.set_title('Learning Rate Schedule', fontsize=14)
+        ax3.set_xlabel('Steps')
+        ax3.set_ylabel('Learning Rate')
+        ax3.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 4: Training vs Validation Loss
+        ax4 = final_fig.add_subplot(gs[2, :])
+        ax4.plot(self.epochs, self.losses, 'b-', linewidth=2, label='Training')
+        
+        if any(x is not None for x in self.val_losses):
+            # Filter out None values
+            val_epochs = [e for e, v in zip(self.epochs, self.val_losses) if v is not None]
+            val_loss_values = [v for v in self.val_losses if v is not None]
+            if val_epochs:
+                ax4.plot(val_epochs, val_loss_values, 'r-', linewidth=2, label='Validation')
+                ax4.legend()
+                
+        ax4.set_title('Training vs Validation Loss', fontsize=14)
+        ax4.set_xlabel('Epochs')
+        ax4.set_ylabel('Loss')
+        ax4.grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot 5: Combined plot with two y-axes
+        ax5 = final_fig.add_subplot(gs[3, :])
+        color1, color2 = 'blue', 'green'
+        
+        # Plot loss on left axis
+        line1 = ax5.plot(self.epochs, self.losses, color=color1, linewidth=2.5, label='Loss')
+        ax5.set_xlabel('Epochs')
+        ax5.set_ylabel('Loss', color=color1)
+        ax5.tick_params(axis='y', labelcolor=color1)
+        
+        # Plot learning rate on right axis
+        ax6 = ax5.twinx()
+        line2 = ax6.plot(self.epochs, self.learning_rates, color=color2, linewidth=2.5, label='Learning Rate')
+        ax6.set_ylabel('Learning Rate', color=color2)
+        ax6.tick_params(axis='y', labelcolor=color2)
+        
+        # Combine legends
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax5.legend(lines, labels, loc='upper right')
+        ax5.set_title('Loss and Learning Rate vs Epochs', fontsize=14)
+        ax5.grid(True, linestyle='--', alpha=0.7)
+        
+        # Add training summary
+        if self.epochs:
+            epoch_count = max(self.epochs)
+            step_count = max(self.steps)
+            min_loss = min(self.losses)
+            min_loss_epoch = self.epochs[self.losses.index(min_loss)]
+            min_loss_step = self.steps[self.losses.index(min_loss)]
+            
+            # Calculate convergence indicators
+            recent_epochs = min(10, len(self.losses))
+            recent_losses = self.losses[-recent_epochs:]
+            loss_change_pct = ((recent_losses[0] - recent_losses[-1]) / recent_losses[0]) * 100 if recent_losses[0] != 0 else 0
+            
+            summary_text = (
+                f"Training Summary\n"
+                f"Total Epochs: {epoch_count:.2f}\n"
+                f"Total Steps: {step_count}\n"
+                f"Min Loss: {min_loss:.6f} (Epoch {min_loss_epoch:.2f}, Step {min_loss_step})\n"
+                f"Recent {recent_epochs} epochs loss change: {loss_change_pct:.2f}%\n"
+            )
+            
+            if len(self.losses) > 20:
+                # Add convergence assessment
+                last_20_losses = self.losses[-20:]
+                std_last_20 = np.std(last_20_losses)
+                converged = std_last_20 < 0.01 and loss_change_pct < 1.0
+                
+                summary_text += f"Convergence status: {'CONVERGED' if converged else 'NOT CONVERGED'}\n"
+                if converged:
+                    summary_text += f"Loss stabilized with std dev {std_last_20:.6f}"
+                else:
+                    summary_text += f"Loss still changing significantly (std dev: {std_last_20:.6f})"
+            
+            plt.figtext(0.02, 0.02, summary_text, fontsize=10, 
+                        bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'))
+        
+        plt.tight_layout(rect=[0, 0.05, 1, 0.97])
+        final_fig.suptitle('CSM Model Finetuning Metrics', fontsize=16, fontweight='bold')
+        plt.subplots_adjust(top=0.93)
+        
+        # Save the final detailed plot
+        final_plot_path = os.path.join(self.output_dir, 'training_metrics_final.png')
+        final_fig.savefig(final_plot_path, dpi=300, bbox_inches='tight')
+        plt.close(final_fig)
+        plt.close(self.fig)
+        
+        logger.info(f"Final training visualization saved to {final_plot_path}")
+        
+        return final_plot_path
 
 class LoRALinear(nn.Module):
     """
@@ -50,7 +294,7 @@ class LoRALinear(nn.Module):
     adds two low-rank trainable matrices A and B, whose product is added
     to the forward pass.
     """
-    def __init__(self, in_features, out_features, r=16, alpha=16, dropout=0.0, bias=True):
+    def __init__(self, in_features, out_features, r=32, alpha=64, dropout=0.0, bias=True):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -82,8 +326,8 @@ class LoRALinear(nn.Module):
         return result + self.scaling * lora_out
 
 def replace_linear_with_lora(module: nn.Module,
-                             r=16,
-                             alpha=16,
+                             r=R,
+                             alpha=APLHA,
                              dropout=0.0,
                              target_linear_names=None):
     """
@@ -307,7 +551,6 @@ def prepare_csm_model_for_training():
     mimi = loaders.get_mimi(mimi_weight, device=DEVICE)
     mimi.set_num_codebooks(32)
     audio_tokenizer = mimi
-    # Create codebook embedding layer using Mimi's codebook 0 centroids
     try:
         codebook_0_centroids = mimi.quantizer.codebooks[0].weight.data  # [V, D]
         num_codebook_0_tokens, embedding_dim = codebook_0_centroids.shape
@@ -316,8 +559,7 @@ def prepare_csm_model_for_training():
         logger.info(f"Initialized codebook_embedding with shape: {codebook_0_centroids.shape}")
     except Exception as e:
         logger.error(f"Failed to initialize codebook_embedding from Mimi: {e}")
-        # fallback: randomly initialize
-        num_codebook_0_tokens, embedding_dim = 1024, 1024  # Adjust if needed
+        num_codebook_0_tokens, embedding_dim = 1024, 1024 
         model.codebook_embedding = nn.Embedding(num_codebook_0_tokens, embedding_dim).to(DEVICE)
         nn.init.xavier_uniform_(model.codebook_embedding.weight)
         logger.info("Falling back to random init for codebook_embedding")
@@ -335,8 +577,8 @@ def prepare_csm_model_for_training():
     logger.info("Applying LoRA to model...")
     model = replace_linear_with_lora(
         model,
-        r=16,
-        alpha=16,
+        r=R,
+        alpha=APLHA,
         dropout=0.0,
         target_linear_names=None
     )
@@ -345,8 +587,11 @@ def prepare_csm_model_for_training():
     for name, param in model.named_parameters():
         if "lora_A" in name or "lora_B" in name or "bias" in name:
             param.requires_grad = True
+        elif "backbone.blocks.23" in name or "embedding" in name:  # last block unfreeze
+            param.requires_grad = True
         else:
             param.requires_grad = False
+
 
     return model, text_tokenizer, audio_tokenizer
 
@@ -469,6 +714,54 @@ def single_pass_forward(model, bridging_module, target_tokens, target_masks, pos
     
     return loss
 
+def calculate_validation_loss(model, bridging_module, dataset, device, max_samples=50):
+    """
+    Calculate validation loss on a subset of the dataset
+    """
+    # Create a small validation dataloader with a subset of data
+    val_indices = torch.randperm(len(dataset))[:max_samples].tolist()
+    val_samples = [dataset[i] for i in val_indices]
+    
+    val_loader = DataLoader(
+        val_samples, 
+        batch_size=1,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=0,
+        pin_memory=False
+    )
+    
+    model.eval()
+    bridging_module.eval()
+    
+    total_loss = 0.0
+    num_batches = 0
+    
+    with torch.no_grad():
+        for batch in val_loader:
+            setup_model_caches(model, batch["target_tokens"].size(0))
+            
+            target_tokens = batch["target_tokens"].to(device)
+            target_masks = batch["target_masks"].to(device)
+            positions = batch["positions"].to(device)
+            
+            if target_tokens.size(1) > 128:
+                target_tokens = target_tokens[:, :128]
+                target_masks = target_masks[:, :128]
+                positions = positions[:, :128]
+            
+            # Forward pass
+            loss = single_pass_forward(model, bridging_module,
+                                      target_tokens, target_masks, positions)
+            
+            total_loss += loss.item()
+            num_batches += 1
+    
+    model.train()
+    bridging_module.train()
+    
+    # Return average loss
+    return total_loss / num_batches if num_batches > 0 else 0.0
 
 def strip_bias_keys(state_dict: dict) -> dict:
     new_sd = {}
@@ -481,7 +774,6 @@ def strip_bias_keys(state_dict: dict) -> dict:
         else:
             print(f"Stripping {k} from checkpoint")
     return new_sd
-
 
 def remove_lora_modules(module: nn.Module) -> nn.Module:
     """
@@ -514,7 +806,6 @@ def remove_lora_modules(module: nn.Module) -> nn.Module:
 
     return module
 
-
 def merge_lora_layer(lora_module: LoRALinear):
     """
     Merge the LoRA params (lora_A, lora_B) into the base weight in-place.
@@ -541,11 +832,23 @@ def merge_lora_weights(model: nn.Module):
 
 def finetune(model, dataset):
     logger.info("Starting finetuning process")
+    csv_file = os.path.join(OUTPUT_DIR, "training_metrics.csv")
+    with open(csv_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "step", "global_step", "loss", "learning_rate", "val_loss"])
     
+    def log_metrics(epoch, step, global_step, loss, learning_rate, val_loss=None):
+        # Log to CSV
+        with open(csv_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, step, global_step, loss, learning_rate, val_loss if val_loss is not None else ""])
+        
+        # Update visualization
+        visualizer.update(epoch, global_step, loss, learning_rate, val_loss)
+
+    visualizer = TrainingVisualizer(OUTPUT_DIR)
     bridging_module = BridgingModule(in_dim=2048, out_dim=1024).to(DEVICE)
     
-    # Important: We do want to train bridging module as well,
-    # so set its parameters to require_grad=True
     for param in bridging_module.parameters():
         param.requires_grad = True
 
@@ -567,17 +870,28 @@ def finetune(model, dataset):
     
     steps_per_epoch = len(dataloader)
     num_training_steps = steps_per_epoch * NUM_EPOCHS // GRADIENT_ACCUMULATION_STEPS
-    lr_scheduler = get_scheduler("cosine", optimizer=optimizer,
-                                 num_warmup_steps=WARMUP_STEPS,
-                                 num_training_steps=num_training_steps)
+    
+    from transformers import get_cosine_schedule_with_warmup
+    lr_scheduler = get_cosine_schedule_with_warmup(
+    optimizer=optimizer,
+    num_warmup_steps=WARMUP_STEPS,
+    num_training_steps=num_training_steps
+    )
+
     
     if USE_WANDB:
         wandb.init(project="csm-finetuning", name="single-pass-lora")
     
     scaler = torch.amp.GradScaler() if MIXED_PRECISION else None
     global_step = 0
+    validation_frequency = max(1, steps_per_epoch // 2)  # Validate twice per epoch
     model.train()
     bridging_module.train()
+    
+    # Calculate initial validation loss
+    logger.info("Calculating initial validation loss...")
+    initial_val_loss = calculate_validation_loss(model, bridging_module, dataset, DEVICE)
+    logger.info(f"Initial validation loss: {initial_val_loss:.6f}")
     
     for epoch in range(NUM_EPOCHS):
         logger.info(f"Starting epoch {epoch+1}/{NUM_EPOCHS}")
@@ -611,27 +925,47 @@ def finetune(model, dataset):
                 else:
                     loss.backward()
                 
+                # Update only after accumulating enough steps
                 if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0 or step == len(dataloader) - 1:
+                    # Unscale for safe grad clipping if using FP16
                     if MIXED_PRECISION:
                         scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+                    
+                    # Explicit gradient clipping with a variable
+                    torch.nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
                     
                     if MIXED_PRECISION:
                         scaler.step(optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
+                    
                     lr_scheduler.step()
                     optimizer.zero_grad()
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    current_loss = loss.item() * GRADIENT_ACCUMULATION_STEPS
+                    current_epoch = epoch + step / steps_per_epoch
                     
+                    # Calculate validation loss periodically
+                    current_val_loss = None
+                    if global_step % validation_frequency == 0:
+                        logger.info(f"Calculating validation loss at step {global_step}...")
+                        current_val_loss = calculate_validation_loss(model, bridging_module, dataset, DEVICE)
+                        logger.info(f"Validation loss: {current_val_loss:.6f}")
+                    
+                    log_metrics(current_epoch, step, global_step, current_loss, current_lr, current_val_loss)
+
                     global_step += 1
                     if USE_WANDB:
-                        wandb.log({
-                            "loss": loss.item() * GRADIENT_ACCUMULATION_STEPS,
-                            "learning_rate": optimizer.param_groups[0]["lr"],
-                            "epoch": epoch + step/steps_per_epoch,
+                        metrics_dict = {
+                            "loss": current_loss,
+                            "learning_rate": current_lr,
+                            "epoch": current_epoch,
                             "global_step": global_step
-                        })
+                        }
+                        if current_val_loss is not None:
+                            metrics_dict["val_loss"] = current_val_loss
+                        wandb.log(metrics_dict)
                 
                 progress_bar.update(1)
                 progress_bar.set_postfix({"loss": loss.item() * GRADIENT_ACCUMULATION_STEPS})
@@ -650,19 +984,37 @@ def finetune(model, dataset):
                 progress_bar.update(1)
                 continue
         
+        # Calculate validation loss at the end of each epoch
+        logger.info(f"Calculating validation loss at end of epoch {epoch+1}...")
+        epoch_val_loss = calculate_validation_loss(model, bridging_module, dataset, DEVICE)
+        logger.info(f"Epoch {epoch+1} validation loss: {epoch_val_loss:.6f}")
+        
+        # Log final metrics for this epoch
+        log_metrics(epoch + 1.0, steps_per_epoch, global_step, current_loss, current_lr, epoch_val_loss)
+        
         checkpoint_dir = os.path.join(OUTPUT_DIR, f"checkpoint-epoch-{epoch+1}")
         os.makedirs(checkpoint_dir, exist_ok=True)
         torch.save({
             "model_state_dict": model.state_dict(),
             "bridge_module_state_dict": bridging_module.state_dict(),
+            "epoch": epoch + 1,
+            "global_step": global_step,
+            "train_loss": current_loss,
+            "val_loss": epoch_val_loss,
         }, os.path.join(checkpoint_dir, "model.safetensors"))
         logger.info(f"Saved checkpoint to {checkpoint_dir}")
+    
+    # Final validation loss calculation
+    final_val_loss = calculate_validation_loss(model, bridging_module, dataset, DEVICE, max_samples=20)
+    logger.info(f"Final validation loss: {final_val_loss:.6f}")
     
     # Final checkpoint with LoRA still separate
     final_lora_path = os.path.join(OUTPUT_DIR, "model_lora.safetensors")
     torch.save({
         "model_state_dict": model.state_dict(),
         "bridge_module_state_dict": bridging_module.state_dict(),
+        "final_train_loss": current_loss,
+        "final_val_loss": final_val_loss,
     }, final_lora_path)
     logger.info(f"Finetuning complete! LoRA-based model saved to {final_lora_path}")
 
@@ -678,7 +1030,9 @@ def finetune(model, dataset):
     final_merged_path = os.path.join(OUTPUT_DIR, "model.safetensors")
     save_file(merged_state, final_merged_path)
     logger.info(f"LoRA-merged & replaced model saved to {final_merged_path}")
-
+    
+    # Generate final visualization with all metrics
+    final_plot_path = visualizer.finalize()
 
     if USE_WANDB:
         wandb.finish()
