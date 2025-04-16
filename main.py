@@ -436,10 +436,10 @@ def audio_generation_thread(text, output_file):
 
             # Dynamically estimate the maximum audio length (in milliseconds)
             words = text.split()
-            avg_wpm = 150
-            words_per_second = avg_wpm / 60  # ~2.5 words per second
+            avg_wpm = 160
+            words_per_second = avg_wpm / 60
             estimated_seconds = len(words) / words_per_second
-            buffer_seconds = 2  # Extra buffer
+            buffer_seconds = 0  # Extra buffer
             max_audio_length_ms = int((estimated_seconds + buffer_seconds) * 1000)
 
             # Start a separate thread to handle real-time inference

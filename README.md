@@ -24,9 +24,7 @@ git clone git@github.com:davidbrowne17/csm-streaming.git
 cd csm-streaming
 python3.10 -m venv .venv
 source .venv/bin/activate
-pip install llama-cpp-python==0.3.4 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 # Replace with your cuda version
 pip install -r requirements.txt
-pip install sounddevice  # Optional: for real-time audio playback
 
 # You will need access to CSM-1B and Llama-3.2-1B
 huggingface-cli login
@@ -35,6 +33,7 @@ huggingface-cli login
 ### Windows Setup
 
 The `triton` package cannot be installed in Windows. Instead use `pip install triton-windows`.
+The realtime demo uses VLLM for inference speed. This is currently not supported for windows but you can try with https://github.com/SystemPanic/vllm-windows until support is added.
 
 ## Quickstart
 
@@ -59,6 +58,13 @@ generate_streaming_audio(
     play_audio=True  # Enable real-time playback
 )
 ```
+## Finetuning
+To finetune CSM all you need are some wav audio files with the speaker voice you want to train, just the raw wavs. Place them in a folder called audio_data and run lora.py.
+You can configure the exact training params such as batch size, number of epochs and learning rate by modifying the values at the top of lora.py.
+You will need a CUDA gpu with at least 12gb of vram depending on your dataset size and training params. You can monitor the training metrics via the dynamic png created in /finetuned_model/ folder. This contains various graphs to help you track the training progress. If you want to try a checkpoint you can use the loadandmergecheckpoint.py (make sure to set the same R and Alpha values as you used in the training)
+
+## Realtime chat demo
+To use the realtime demo run the setup.py to download the required models, and then run main.py. This will open up a setup page at http://localhost:8000 in which you can set the paths for your choosen LLM and setup the CSM paths and reference audio as well as select your heaset and mic. When loaded you will be able to chat in realtime with the AI just like the CSM demo. Our demo includes a dynamic RAG system so the AI can remember previous conversations. The demo by default uses whisper-large-v3-turbo for tts and includes Automatic Voice Detection using Silero VAD.
 
 ## Usage
 
@@ -186,19 +192,12 @@ audio = generator.generate(
 
 torchaudio.save("audio.wav", audio.unsqueeze(0).cpu(), generator.sample_rate)
 ```
-
-### 6. Finetuning
-To finetune CSM all you need are some wav audio files with the speaker voice you want to train, just the raw wavs. Place them in a folder called audio_data and run lora.py.
-You can configure the exact training params such as batch size, number of epochs and learning rate by modifying the values at the top of lora.py.
-You will need a CUDA gpu with at least 12gb of vram depending on your dataset size and training params.
-
 ## Performance Optimizations
 
 Our optimized version includes several performance enhancements:
 
-- **Streaming Generation**: Processes and outputs audio in chunks instead of waiting for the entire generation achieving a Real-time factor (RTF): 2.933x without Flash-Attn on a Windows machine
+- **Streaming Generation**: Processes and outputs audio in chunks instead of waiting for the entire generation achieving a Real-time factor (RTF): 0.5x (target: <1.0) on a 4090. (10 seconds of audio takes 5 seconds to generate)
 - **Frame Batching**: Processes multiple frames at once for better GPU utilization
-- **Lower Temperature Sampling**: Faster sampling with minimal quality loss
 - **Half-precision Inference**: Uses bfloat16/float16 for faster processing
 - **CUDA Optimizations**: Enables cuDNN benchmarking and Flash Attention where available
 - **Memory Management**: Clears GPU cache before generation to reduce memory pressure
@@ -207,7 +206,7 @@ Our optimized version includes several performance enhancements:
 
 **How much faster is the streaming version?**
 
-The perceived response time is significantly faster since you get the first audio chunks in milliseconds instead of waiting for the entire generation to complete. The actual total generation time is also improved by 20-40% depending on your hardware.
+The perceived response time is significantly faster since you get the first audio chunks in milliseconds instead of waiting for the entire generation to complete. The actual total generation time is also improved by 40-60% depending on your hardware.
 
 **Does this model come with any voices?**
 
@@ -215,7 +214,7 @@ The model is a base generation model capable of producing a variety of voices bu
 
 **Can I converse with the model?**
 
-CSM is trained to be an audio generation model and not a general-purpose multimodal LLM. It cannot generate text. We suggest using a separate LLM for text generation.
+CSM is trained to be an audio generation model and not a general-purpose multimodal LLM. It cannot generate text. Using a seperate LLM you can converse with the realtime demo via the web ui.
 
 **Does it support other languages?**
 
@@ -236,5 +235,5 @@ By using this model, you agree to comply with all applicable laws and ethical gu
 ## Original Authors
 Johan Schalkwyk, Ankit Kumar, Dan Lyth, Sefik Emre Eskimez, Zack Hodari, Cinjon Resnick, Ramon Sanabria, Raven Jiang, and the Sesame team.
 
-## Streaming and Finetuning Implementation
+## Streaming, Realtime Demo and Finetuning Implementation
 David Browne
