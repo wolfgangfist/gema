@@ -122,6 +122,26 @@ def prepare_audio_response(audio, context_id):
             error=f"Failed to prepare audio: {str(e)}"
         )
 
+# Function to record user's input in the conversation context
+def record_user_input(context_id, text):
+    """
+    Record the user's input in the conversation context with speaker_id=1
+    This doesn't generate audio, just stores the text in the context
+    """
+    try:
+        # Record the user's input with speaker_id=1
+        print(f"Recording user input with speaker_id=1: '{text}'")
+        audioGenerator.store_input(
+            text=text,
+            speaker_id=1,  # User is always speaker 1
+            context_id=context_id
+        )
+        return True
+    except Exception as e:
+        print(f"Error recording user input: {e}")
+        traceback.print_exc()
+        return False
+
 async def echo(websocket):
     async for message in websocket:
         print(f"Received message: {message}")
@@ -136,9 +156,13 @@ async def echo(websocket):
                 if request.text and request.text.strip():
                     print(f"Processing final text: '{request.text}' for context {request.contextId}")
                     try:
+                        # First record the user's input with speaker_id=1
+                        record_user_input(request.contextId, request.text)
+                        
+                        # Then generate AI response with speaker_id=0
                         audio = audioGenerator.generate(
-                            text=request.text,
-                            speaker_id=0,
+                            text="",  # Empty text because we're using the EOS to trigger generation
+                            speaker_id=0,  # AI is always speaker 0
                             context_id=request.contextId,
                             sample_rate=16000,
                             eos=True
@@ -202,10 +226,13 @@ async def echo(websocket):
                 if request.text and request.text.strip():
                     print(f"Processing text: '{request.text}' for context {request.contextId}")
                     try:
+                        # First record the user's input with speaker_id=1
+                        record_user_input(request.contextId, request.text)
+                        
                         audio = audioGenerator.generate(
-                            text=request.text, 
-                            speaker_id=0, 
-                            context_id=request.contextId, 
+                            text=request.text,  # Just pass the input text directly
+                            speaker_id=0,  # AI is always speaker 0 
+                            context_id=request.contextId,
                             sample_rate=16000
                         )
                         
