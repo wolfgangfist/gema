@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 
 class RequestOperation:
@@ -11,6 +11,7 @@ class ResponseType:
     ERR = "error"
     AUDIO_CHUNK = "chunk"
     METADATA = "timestamps"
+    ACK = "ack"
 
 @dataclass
 class Request:
@@ -29,5 +30,6 @@ class Response:
     type: ResponseType = None
     contextId: Optional[str] = None
     data: Optional[str] = None
+    metadata: Optional[Dict] = None
     timestamps: Optional[Timestamps] = None
     error: Optional[str] = None

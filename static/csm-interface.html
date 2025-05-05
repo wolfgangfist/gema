@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSM Conversation Interface</title>
+    <style>
+        :root {
+            --background-color: #1e1e1e;
+            --sidebar-background: #252526;
+            --table-row-odd: #1e1e1e;    
+            --table-row-even: #252526;   
+            --theme-color: #42b983;
+            --text-color: #ddd;
+            --border-color: #444;
+            --accent-color: #4d78cc;
+            --error-color: #e06c75;
+            --success-color: #98c379;
+            --recording-color: #e06c75;
+            --warning-color: #e5c07b;
+            --user-text-color: #98c379;
+            --csm-text-color: #4d78cc;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: var(--text-color);
+        }
+        
+        .mic-button {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background-color: var(--sidebar-background);
+            border: 2px solid var(--border-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px auto;
+            transition: all 0.3s;
+        }
+        
+        .mic-button.recording {
+            background-color: var(--recording-color);
+            border-color: #cc0000;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .mic-button.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .mic-icon {
+            font-size: 40px;
+        }
+        
+        .transcript {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            min-height: 150px;
+            background-color: var(--sidebar-background);
+            color: var(--text-color);
+            white-space: pre-wrap;
+            overflow-y: auto;
+            max-height: 300px;
+        }
+        
+        .transcript .user {
+            color: var(--user-text-color);
+            margin-bottom: 10px;
+        }
+        
+        .transcript .csm {
+            color: var(--csm-text-color);
+            margin-bottom: 15px;
+        }
+        
+        .status {
+            margin: 15px 0;
+            padding: 10px;
+            color: var(--text-color);
+            text-align: center;
+            border-radius: 4px;
+            background-color: var(--sidebar-background);
+            border: 1px solid var(--border-color);
+        }
+        
+        .status.error {
+            color: var(--error-color);
+            border-color: var(--error-color);
+        }
+        
+        .status.success {
+            color: var(--success-color);
+            border-color: var(--success-color);
+        }
+        
+        .status.warning {
+            color: var(--warning-color);
+            border-color: var(--warning-color);
+        }
+        
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 20px 0;
+        }
+        
+        .button-row {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        
+        button {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 15px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        
+        button:hover {
+            background: #5a88dd;
+        }
+        
+        button:disabled {
+            background: #333;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+        
+        .clear-btn {
+            background: var(--sidebar-background);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+        }
+        
+        .clear-btn:hover {
+            background: #333;
+        }
+        
+        .reconnect-btn {
+            background: var(--warning-color);
+            color: #000;
+        }
+        
+        .reconnect-btn:hover {
+            background: #f0d78e;
+        }
+        
+        .test-audio-btn {
+            background: var(--theme-color);
+            color: #000;
+        }
+        
+        .test-audio-btn:hover {
+            background: #55ccaa;
+        }
+        
+        .connection-info {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #888;
+            text-align: center;
+        }
+        
+        .info-panel {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: var(--sidebar-background);
+            border: 1px solid var(--border-color);
+        }
+        
+        .info-panel h3 {
+            margin-top: 0;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .debug-info {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 0.8em;
+            color: #888;
+            white-space: pre-wrap;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSM Conversation Interface</h1>
+    
+    <div class="controls">
+        <div class="mic-button" id="micButton">
+            <span class="mic-icon">🎤</span>
+        </div>
+        <div class="button-row">
+            <button class="clear-btn" id="clearBtn">Clear Conversation</button>
+            <button class="reconnect-btn" id="reconnectBtn">Reconnect to CSM</button>
+            <button class="test-audio-btn" id="testAudioBtn">Test Audio</button>
+        </div>
+    </div>
+    
+    <div class="status" id="status">Initializing...</div>
+    
+    <div class="transcript" id="transcript"></div>
+    
+    <div class="connection-info" id="connectionInfo"></div>
+    
+    <div class="info-panel" id="troubleshootingPanel">
+        <h3>Troubleshooting</h3>
+        <p>If you're having connection issues:</p>
+        <ul>
+            <li>Check that the CSM service is running with <code>PORT=8765 python websocket_server.py</code></li>
+            <li>Make sure you have access to the Hugging Face models</li>
+            <li>Verify your browser supports WebSpeech API and WebSockets</li>
+            <li>If audio playback is not working, check your system sound settings</li>
+        </ul>
+    </div>
+    
+    <div class="debug-info" id="debugInfo"></div>
+
+    <script>
+        // DOM Elements
+        const micButton = document.getElementById('micButton');
+        const clearBtn = document.getElementById('clearBtn');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const testAudioBtn = document.getElementById('testAudioBtn');
+        const status = document.getElementById('status');
+        const transcript = document.getElementById('transcript');
+        const connectionInfo = document.getElementById('connectionInfo');
+        const debugInfo = document.getElementById('debugInfo');
+        
+        // State variables
+        let isRecording = false;
+        let isProcessing = false;
+        let recognition = null;
+        let socket = null;
+        let reconnectAttempts = 0;
+        let reconnectTimer = null;
+        let audioContext = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        let currentConversationId = null;
+        
+        // Debug function
+        function debug(message) {
+            const timestamp = new Date().toISOString().substring(11, 23);
+            debugInfo.innerHTML = `[${timestamp}] ${message}\n` + debugInfo.innerHTML;
+            if (debugInfo.innerHTML.length > 5000) {
+                debugInfo.innerHTML = debugInfo.innerHTML.substring(0, 5000) + '...';
+            }
+            console.log(`[${timestamp}] ${message}`);
+        }
+
+        // Initialize WebSpeech API
+        function initializeSpeechRecognition() {
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                status.textContent = 'Speech recognition not supported in this browser';
+                status.className = 'status error';
+                micButton.classList.add('disabled');
+                debug("Speech recognition not supported");
+                return false;
+            }
+            
+            // Create speech recognition object
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            
+            // Configure
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+            
+            // Set up event handlers
+            recognition.onstart = () => {
+                debug("Speech recognition started");
+                micButton.classList.add('recording');
+                status.textContent = 'Listening...';
+                status.className = 'status';
+                isRecording = true;
+            };
+            
+            recognition.onresult = (event) => {
+                const resultIndex = event.resultIndex;
+                const transcript = event.results[resultIndex][0].transcript;
+                const isFinal = event.results[resultIndex].isFinal;
+                
+                if (isFinal) {
+                    debug(`Final recognition result: ${transcript}`);
+                    stopRecording();
+                    processRecognizedText(transcript);
+                }
+            };
+            
+            recognition.onerror = (event) => {
+                debug(`Speech recognition error: ${event.error}`);
+                stopRecording();
+                status.textContent = `Recognition error: ${event.error}`;
+                status.className = 'status error';
+            };
+            
+            recognition.onend = () => {
+                debug("Speech recognition ended");
+                if (isRecording) {
+                    stopRecording();
+                }
+            };
+            
+            return true;
+        }
+        
+        // Process recognized text and send to CSM
+        function processRecognizedText(text) {
+            if (!text.trim()) {
+                status.textContent = 'No speech detected';
+                status.className = 'status warning';
+                return;
+            }
+            
+            // Add user text to transcript
+            appendToTranscript('user', text);
+            
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                status.textContent = 'Not connected to CSM server';
+                status.className = 'status error';
+                return;
+            }
+            
+            // Generate a conversation ID if we don't have one
+            if (!currentConversationId) {
+                currentConversationId = 'conv-' + Date.now();
+                debug(`Created new conversation ID: ${currentConversationId}`);
+            }
+            
+            isProcessing = true;
+            status.textContent = 'Processing...';
+            status.className = 'status';
+            
+            // Send the text to CSM
+            socket.send(JSON.stringify({
+                text: text,
+                contextId: currentConversationId
+            }));
+            
+            debug(`Sent to CSM: "${text}"`);
+
+            // Send EOS signal with a small delay to ensure text is processed first
+            setTimeout(() => {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    operation: "eos",
+                    contextId: currentConversationId
+                }));
+                debug("Sent EOS signal to CSM to force generation");
+        }
+            }, 500);
+        }
+        
+        // Append text to transcript
+        function appendToTranscript(role, text) {
+            const element = document.createElement('div');
+            element.className = role;
+            element.textContent = role === 'user' ? `You: ${text}` : `CSM: ${text}`;
+            transcript.appendChild(element);
+            transcript.scrollTop = transcript.scrollHeight;
+        }
+        
+        // Initialize Audio Context
+        function initializeAudioContext() {
+            try {
+            if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000 // Match CSM sample rate
+                    });
+
+                    debug(`AudioContext initialized with sample rate: ${audioContext.sampleRate}Hz`);
+                }
+
+                // Resume audio context in case it's suspended
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume()
+                        .then(() => debug("AudioContext resumed during initialization"))
+                        .catch(err => debug(`Failed to resume AudioContext: ${err.message}`));
+                }
+
+                return true;
+            } catch (error) {
+                debug(`Audio context error: ${error.message}`);
+                status.textContent = `Audio initialization error: ${error.message}`;
+                status.className = 'status error';
+                return false;
+            }
+            }
+            
+        // Test audio with a simple tone
+        function testAudio() {
+            if (!audioContext) {
+                if (!initializeAudioContext()) return;
+            }
+            
+            try {
+                // Make sure context is running
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+                
+                // Create a test tone
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                oscillator.type = 'sine';
+                oscillator.frequency.value = 440; // A4 note
+                gainNode.gain.value = 0.2; // 20% volume
+                
+                status.textContent = 'Playing test tone...';
+                debug("Playing test tone");
+                
+                oscillator.start();
+                setTimeout(() => {
+                    oscillator.stop();
+                    status.textContent = 'Test tone complete';
+                    debug("Test tone finished");
+                }, 500);
+            } catch (err) {
+                debug(`Test audio error: ${err.message}`);
+                status.textContent = `Audio test error: ${err.message}`;
+                status.className = 'status error';
+            }
+        }
+            
+        // Play audio received from CSM
+        function playAudio(audioData, metadata = null) {
+            if (!audioContext) {
+                if (!initializeAudioContext()) return;
+            }
+
+            // Make sure the audio context is running (needed due to autoplay restrictions)
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().then(() => {
+                    debug("AudioContext resumed");
+                }).catch(err => {
+                    debug(`Error resuming AudioContext: ${err}`);
+                });
+            }
+
+            try {
+                // Convert base64 to ArrayBuffer
+                const binaryString = window.atob(audioData);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                debug(`Received audio data: ${len} bytes`);
+                if (metadata) {
+                    debug(`Audio metadata: format=${metadata.format}, samples=${metadata.length_samples}, rate=${metadata.sample_rate}Hz`);
+                }
+
+                // Play audio directly as Int16 PCM
+                try {
+                    const sampleRate = metadata?.sample_rate || 16000;
+                    const view = new Int16Array(bytes.buffer);
+
+                // Convert Int16 to Float32
+                    const floatData = new Float32Array(view.length);
+                for (let i = 0; i < view.length; i++) {
+                        floatData[i] = view[i] / 32768.0;
+                }
+
+                    // Create buffer
+                    const buffer = audioContext.createBuffer(1, floatData.length, sampleRate);
+                    buffer.getChannelData(0).set(floatData);
+
+                    // Create source node
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+
+                    // Create gain node
+                    const gainNode = audioContext.createGain();
+                    gainNode.gain.value = 1.0; // Full volume
+
+                    // Connect nodes
+                    source.connect(gainNode);
+                    gainNode.connect(audioContext.destination);
+
+                    // Play audio
+                    source.start(0);
+                    debug(`Playing audio: ${(floatData.length/sampleRate).toFixed(2)}s duration`);
+
+                    return; // Exit if direct playback succeeds
+            } catch (err) {
+                    debug(`Direct Int16 playback failed: ${err.message}. Trying standard decoding...`);
+            }
+
+                // Fall back to standard audio decoding if direct playback fails
+                audioContext.decodeAudioData(bytes.buffer,
+                    (buffer) => {
+                        // Create buffer source
+                        const source = audioContext.createBufferSource();
+                        source.buffer = buffer;
+
+                        // Create gain node for volume control
+                        const gainNode = audioContext.createGain();
+                        gainNode.gain.value = 1.0; // Full volume
+
+                        // Connect nodes
+                        source.connect(gainNode);
+                        gainNode.connect(audioContext.destination);
+
+                        // Play audio
+                        source.start(0);
+
+                        debug(`Playing decoded audio: ${buffer.duration.toFixed(2)}s, ${buffer.numberOfChannels} channels, ${buffer.sampleRate}Hz`);
+                    },
+                    (error) => {
+                        debug(`Audio decode error: ${error}`);
+        }
+                );
+            } catch (error) {
+                debug(`Error processing audio data: ${error.message}`);
+            }
+        }
+        
+        // Play next audio chunk in queue
+        function playNextInQueue() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                debug("Audio queue empty, playback complete");
+                return;
+                }
+                
+            isPlaying = true;
+            const audioBuffer = audioQueue.shift();
+            
+            debug(`Decoding audio buffer of size: ${audioBuffer.byteLength} bytes`);
+
+            // Decode audio data
+            audioContext.decodeAudioData(audioBuffer, 
+                (buffer) => {
+                    // Create buffer source
+                    const source = audioContext.createBufferSource();
+                    source.buffer = buffer;
+                    
+                    // Create gain node for volume control
+                    const gainNode = audioContext.createGain();
+                    gainNode.gain.value = 1.0; // Full volume
+
+                    // Connect nodes: source -> gain -> destination
+                    source.connect(gainNode);
+                    gainNode.connect(audioContext.destination);
+
+                    // Play audio
+                    source.onended = () => {
+                        debug("Audio chunk playback finished");
+                        playNextInQueue();
+                    };
+
+                    debug(`Playing audio chunk (${buffer.duration.toFixed(2)}s, ${buffer.numberOfChannels} channels, ${buffer.sampleRate}Hz)`);
+                    source.start(0);
+                },
+                (error) => {
+                    debug(`Audio decode error: ${error}`);
+                    // Try to handle Int16 audio data directly if decoding fails
+                    tryDirectPlayback(audioBuffer);
+                    playNextInQueue(); // Skip problematic buffer
+                }
+            );
+        }
+        
+        // Fallback method to try direct playback if decoding fails
+        function tryDirectPlayback(audioBuffer) {
+            try {
+                debug("Attempting direct Int16 audio playback");
+
+                // Assuming the audio is 16-bit PCM, 16kHz, mono
+                const view = new Int16Array(audioBuffer);
+                const audioFloat32 = new Float32Array(view.length);
+
+                // Convert Int16 to Float32
+                for (let i = 0; i < view.length; i++) {
+                    audioFloat32[i] = view[i] / 32768.0;
+                }
+
+                // Create buffer with the audio data
+                const buffer = audioContext.createBuffer(1, audioFloat32.length, 16000);
+                buffer.getChannelData(0).set(audioFloat32);
+
+                // Play it
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+                source.start(0);
+
+                debug("Direct playback initiated");
+            } catch (err) {
+                debug(`Direct playback failed: ${err.message}`);
+            }
+        }
+
+        // Connect to CSM WebSocket server
+        function connectWebSocket() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            
+            // Get the current hostname dynamically
+            const hostname = window.location.hostname || 'localhost';
+            const port = 8765; // CSM default port
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const wsUrl = `${wsProtocol}${hostname}:${port}`;
+            
+            status.textContent = 'Connecting to CSM server...';
+            status.className = 'status';
+            connectionInfo.textContent = `Attempting to connect to ${wsUrl}`;
+            try {
+                socket = new WebSocket(wsUrl);
+                
+                socket.onopen = () => {
+                    status.textContent = 'Connected to CSM server';
+                    status.className = 'status success';
+                    connectionInfo.textContent = `Connected to ${wsUrl}`;
+                    reconnectAttempts = 0;
+                    micButton.classList.remove('disabled');
+                    debug("CSM WebSocket connection established");
+                };
+
+                socket.onmessage = (event) => {
+                    try {
+                        const response = JSON.parse(event.data);
+                        
+                        if (response.type === "chunk" && response.data) {
+                            // Play audio chunk
+                            debug(`Received audio chunk with ${response.data.length} characters`);
+                            if (response.metadata) {
+                                debug(`Audio metadata: ${JSON.stringify(response.metadata)}`);
+                            }
+
+                            playAudio(response.data, response.metadata);
+
+                            // Append CSM text to transcript if this is the first chunk
+                            if (isProcessing) {
+                                isProcessing = false;
+                                status.textContent = 'CSM is responding...';
+                                status.className = 'status success';
+                                
+                                // For simplicity, we're not using timestamps and assume
+                                // the text is displayed elsewhere. In a real implementation,
+                                // you might want to handle this differently.
+                                appendToTranscript('csm', '*Speaking*');
+                            }
+                        } else if (response.type === "error") {
+                            status.textContent = `CSM error: ${response.error}`;
+                            status.className = 'status error';
+                            debug(`CSM error: ${response.error}`);
+                            isProcessing = false;
+                        } else if (response.type === "ack") {
+                            debug(`Received acknowledgment for operation on context ${response.contextId}`);
+                            // If we were processing, update the status
+                            if (isProcessing) {
+                                isProcessing = false;
+                                status.textContent = 'Ready for next input';
+            status.className = 'status success';
+        }
+                        }
+                    } catch (e) {
+                        debug(`Error parsing message: ${e.message}`);
+                    }
+                };
+
+                socket.onclose = (event) => {
+                    if (event.wasClean) {
+                        status.textContent = `Connection closed cleanly, code=${event.code}`;
+                        debug(`CSM WebSocket connection closed cleanly: ${event.code}`);
+                    } else {
+                        status.textContent = 'Connection to CSM server lost';
+                        debug("CSM WebSocket connection lost");
+                    }
+                    status.className = 'status error';
+                    connectionInfo.textContent = `Connection closed. Reconnect attempt ${reconnectAttempts + 1}`;
+                    micButton.classList.add('disabled');
+                    
+                    // Attempt to reconnect with exponential backoff
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 30000);
+                    reconnectTimer = setTimeout(connectWebSocket, delay);
+                };
+
+                socket.onerror = (error) => {
+                    status.textContent = 'CSM WebSocket error';
+                    status.className = 'status error';
+                    connectionInfo.textContent = 'Check server logs for details';
+                    debug("CSM WebSocket error");
+                };
+            } catch (error) {
+                status.textContent = 'Failed to connect to CSM server';
+                status.className = 'status error';
+                connectionInfo.textContent = error.message;
+                micButton.classList.add('disabled');
+                debug(`Connection error: ${error.message}`);
+            }
+        }
+        
+        // Start recording
+        function startRecording() {
+            if (!recognition) {
+                if (!initializeSpeechRecognition()) return;
+            }
+            
+            if (socket?.readyState !== WebSocket.OPEN) {
+                status.textContent = 'Cannot record: Not connected to CSM server';
+                status.className = 'status error';
+                debug("Recording attempted but not connected to server");
+                return;
+            }
+            
+            if (isRecording || isProcessing) {
+                debug("Already recording or processing");
+                return;
+            }
+            
+            try {
+                recognition.start();
+                debug("Started recording");
+            } catch (e) {
+                debug(`Error starting recognition: ${e.message}`);
+                status.textContent = `Recognition error: ${e.message}`;
+                status.className = 'status error';
+            }
+        }
+        
+        // Stop recording
+        function stopRecording() {
+            if (isRecording) {
+                try {
+                    recognition.stop();
+                    debug("Stopped recording");
+                } catch (e) {
+                    debug(`Error stopping recognition: ${e.message}`);
+                }
+                
+                micButton.classList.remove('recording');
+                isRecording = false;
+            }
+        }
+        
+        // Send "end of stream" signal to CSM
+        function sendEOS() {
+            if (socket?.readyState === WebSocket.OPEN && currentConversationId) {
+                socket.send(JSON.stringify({
+                    operation: "eos",
+                    contextId: currentConversationId
+                }));
+                debug("Sent EOS signal to CSM");
+            }
+        }
+        
+        // Initialize the application
+        function initialize() {
+            debug("Initializing application");
+            
+            // Check for Web Speech API support
+            if (!initializeSpeechRecognition()) {
+                status.textContent = 'Web Speech API not supported in this browser';
+                status.className = 'status error';
+                return;
+            }
+            
+            // Initialize audio context
+            initializeAudioContext();
+            
+            // Connect to CSM server
+            connectWebSocket();
+            
+            // Attach event listeners
+            micButton.addEventListener('click', () => {
+                if (micButton.classList.contains('disabled')) return;
+                
+                if (!isRecording) {
+                    startRecording();
+                } else {
+                    stopRecording();
+                }
+            });
+            
+            clearBtn.addEventListener('click', () => {
+                transcript.innerHTML = '';
+                
+                // Clear conversation context
+                if (socket?.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({
+                        operation: "clear",
+                        contextId: currentConversationId
+                    }));
+                    debug("Sent clear context to CSM");
+                }
+                
+                // Generate a new conversation ID
+                currentConversationId = 'conv-' + Date.now();
+                debug(`Created new conversation ID: ${currentConversationId}`);
+                
+                // Clear audio queue
+                audioQueue = [];
+                isPlaying = false;
+                
+                debug("Conversation cleared");
+            });
+            
+            reconnectBtn.addEventListener('click', () => {
+                debug("Manual reconnection requested");
+                if (socket && socket.readyState !== WebSocket.CLOSED) {
+                    socket.close();
+                }
+                connectWebSocket();
+            });
+            
+            testAudioBtn.addEventListener('click', () => {
+                debug("Audio test requested");
+                testAudio();
+            });
+            
+            // Handle visibility change
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    // Check connection when page becomes visible
+                    if (socket?.readyState !== WebSocket.OPEN) {
+                        status.textContent = 'Connection lost while away';
+                        status.className = 'status warning';
+                        debug("Page became visible, reconnecting");
+                        connectWebSocket();
+                    }
+                }
+            });
+            
+            // Handle page unload - send EOS
+            window.addEventListener('beforeunload', () => {
+                sendEOS();
+            });
+            
+            // Set initial status
+            status.textContent = 'Ready to start conversation';
+            status.className = 'status success';
+        }
+        
+        // Initialize on page load
+        window.addEventListener('load', initialize);
+    </script>
+</body>
+</html>

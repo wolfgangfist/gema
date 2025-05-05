@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fast Whisper Test</title>
+    <style>
+        :root {
+            --background-color: #1e1e1e;
+            --sidebar-background: #252526;
+            --table-row-odd: #1e1e1e;    
+            --table-row-even: #252526;   
+            --theme-color: #42b983;
+            --text-color: #ddd;
+            --border-color: #444;
+            --accent-color: #4d78cc;
+            --error-color: #e06c75;
+            --success-color: #98c379;
+            --recording-color: #e06c75;
+            --warning-color: #e5c07b;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: var(--text-color);
+        }
+        
+        .mic-button {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background-color: var(--sidebar-background);
+            border: 2px solid var(--border-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px auto;
+            transition: all 0.3s;
+        }
+        
+        .mic-button.recording {
+            background-color: var(--recording-color);
+            border-color: #cc0000;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .mic-button.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .mic-icon {
+            font-size: 40px;
+        }
+        
+        .transcript {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            min-height: 150px;
+            background-color: var(--sidebar-background);
+            color: var(--text-color);
+            white-space: pre-wrap;
+        }
+        
+        .status {
+            margin: 15px 0;
+            padding: 10px;
+            color: var(--text-color);
+            text-align: center;
+            border-radius: 4px;
+            background-color: var(--sidebar-background);
+            border: 1px solid var(--border-color);
+        }
+        
+        .status.error {
+            color: var(--error-color);
+            border-color: var(--error-color);
+        }
+        
+        .status.success {
+            color: var(--success-color);
+            border-color: var(--success-color);
+        }
+        
+        .status.warning {
+            color: var(--warning-color);
+            border-color: var(--warning-color);
+        }
+        
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 20px 0;
+        }
+        
+        button {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 15px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        
+        button:hover {
+            background: #5a88dd;
+        }
+        
+        button:disabled {
+            background: #333;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+        
+        .clear-btn {
+            background: var(--sidebar-background);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            margin-top: 10px;
+        }
+        
+        .clear-btn:hover {
+            background: #333;
+        }
+        
+        .reconnect-btn {
+            background: var(--warning-color);
+            color: #000;
+        }
+        
+        .reconnect-btn:hover {
+            background: #f0d78e;
+        }
+        
+        .connection-info {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #888;
+            text-align: center;
+        }
+        
+        .info-panel {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: var(--sidebar-background);
+            border: 1px solid var(--border-color);
+        }
+        
+        .info-panel h3 {
+            margin-top: 0;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .debug-info {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 0.8em;
+            color: #888;
+            white-space: pre-wrap;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Fast Whisper Test</h1>
+    
+    <div class="controls">
+        <div class="mic-button" id="micButton">
+            <span class="mic-icon">🎤</span>
+        </div>
+        <div>
+            <button class="clear-btn" id="clearBtn">Clear Transcript</button>
+            <button class="reconnect-btn" id="reconnectBtn">Reconnect</button>
+        </div>
+    </div>
+    
+    <div class="status" id="status">Connecting to server...</div>
+    
+    <div class="transcript" id="transcript"></div>
+    
+    <div class="connection-info" id="connectionInfo"></div>
+    
+    <div class="info-panel" id="troubleshootingPanel">
+        <h3>Troubleshooting</h3>
+        <p>If you're having connection issues:</p>
+        <ul>
+            <li>Check that the FastWhisper service is running with <code>docker ps | grep fastwhisper</code></li>
+            <li>Restart the service with <code>docker restart fastwhisper</code></li>
+            <li>Check the logs for errors with <code>docker logs fastwhisper</code></li>
+            <li>Verify your browser supports WebSockets</li>
+        </ul>
+    </div>
+    
+    <div class="debug-info" id="debugInfo"></div>
+
+    <script>
+        const micButton = document.getElementById('micButton');
+        const clearBtn = document.getElementById('clearBtn');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const status = document.getElementById('status');
+        const transcript = document.getElementById('transcript');
+        const connectionInfo = document.getElementById('connectionInfo');
+        const debugInfo = document.getElementById('debugInfo');
+        
+        let audioContext;
+        let audioStream;
+        let audioWorkletNode;
+        let socket;
+        let isRecording = false;
+        let reconnectAttempts = 0;
+        let reconnectTimer = null;
+        let pingInterval = null;
+        
+        // Debug function
+        function debug(message) {
+            const timestamp = new Date().toISOString().substring(11, 23);
+            debugInfo.innerHTML = `[${timestamp}] ${message}\n` + debugInfo.innerHTML;
+            if (debugInfo.innerHTML.length > 5000) {
+                debugInfo.innerHTML = debugInfo.innerHTML.substring(0, 5000) + '...';
+            }
+            console.log(`[${timestamp}] ${message}`);
+        }
+
+        // Connect to WebSocket
+        function connectWebSocket() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            
+            if (pingInterval) {
+                clearInterval(pingInterval);
+                pingInterval = null;
+            }
+
+            // Get the current hostname dynamically
+            const hostname = window.location.hostname || 'localhost';
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const wsUrl = `${wsProtocol}${hostname}:9000/ws`;
+            
+            status.textContent = 'Connecting to server...';
+            status.className = 'status';
+            connectionInfo.textContent = `Attempting to connect to ${wsUrl}`;
+            
+            // Disable mic button during connection attempt
+            micButton.classList.add('disabled');
+            
+            try {
+                socket = new WebSocket(wsUrl);
+                
+                socket.onopen = () => {
+                    status.textContent = 'Connected to server';
+                    status.className = 'status success';
+                    connectionInfo.textContent = `Connected to ${wsUrl}`;
+                    reconnectAttempts = 0;
+                    micButton.classList.remove('disabled');
+                    debug("WebSocket connection established");
+                    
+                    // Set up ping interval to keep connection alive
+                    pingInterval = setInterval(() => {
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({ type: 'ping' }));
+                        }
+                    }, 30000); // Send ping every 30 seconds
+                };
+
+                socket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'transcription') {
+                            debug(`Received transcription: ${data.text}`);
+                            transcript.textContent += data.text + ' ';
+                        } else if (data.type === 'pong') {
+                            debug("Received pong from server");
+                        }
+                    } catch (e) {
+                        debug(`Error parsing message: ${e.message}`);
+                    }
+                };
+
+                socket.onclose = (event) => {
+                    if (event.wasClean) {
+                        status.textContent = `Connection closed cleanly, code=${event.code}`;
+                        debug(`WebSocket connection closed cleanly: ${event.code}`);
+                    } else {
+                        status.textContent = 'Connection lost';
+                        debug("WebSocket connection lost");
+                    }
+                    status.className = 'status error';
+                    connectionInfo.textContent = `Connection closed. Reconnect attempt ${reconnectAttempts + 1}`;
+                    micButton.classList.add('disabled');
+                    
+                    // Stop recording if we were recording
+                    if (isRecording) {
+                        stopRecording();
+                    }
+                    
+                    // Clear ping interval
+                    if (pingInterval) {
+                        clearInterval(pingInterval);
+                        pingInterval = null;
+                    }
+                    
+                    // Attempt to reconnect with exponential backoff
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 30000);
+                    reconnectTimer = setTimeout(connectWebSocket, delay);
+                };
+
+                socket.onerror = (error) => {
+                    status.textContent = 'WebSocket error';
+                    status.className = 'status error';
+                    connectionInfo.textContent = 'Check server logs for details';
+                    debug("WebSocket error");
+                };
+            } catch (error) {
+                status.textContent = 'Failed to connect to server';
+                status.className = 'status error';
+                connectionInfo.textContent = error.message;
+                micButton.classList.add('disabled');
+                debug(`Connection error: ${error.message}`);
+            }
+        }
+
+        // Initialize WebSocket connection
+        connectWebSocket();
+
+        // Helper function to convert ArrayBuffer to base64
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return window.btoa(binary);
+        }
+
+        // Initialize audio processing with modern AudioWorklet API
+        async function setupAudio() {
+            try {
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000  // Set sample rate to match Whisper model
+                });
+                
+                // Load audio processor worklet
+                await audioContext.audioWorklet.addModule('audioProcessor.js');
+                
+                // Get microphone stream
+                audioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        autoGainControl: true,
+                        noiseSuppression: true,
+                        echoCancellation: true,
+                    } 
+                });
+                
+                // Create audio source from microphone
+                const source = audioContext.createMediaStreamSource(audioStream);
+                
+                // Create audio worklet node
+                audioWorkletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+                
+                // Listen for messages from the audio processor
+                audioWorkletNode.port.onmessage = (event) => {
+                    if (isRecording && socket && socket.readyState === WebSocket.OPEN) {
+                        const { audioData } = event.data;
+                        
+                        // Convert to base64
+                        const base64Audio = arrayBufferToBase64(audioData.buffer);
+                        
+                        // Send to server
+                        socket.send(JSON.stringify({
+                            type: 'audio',
+                            data: base64Audio
+                        }));
+                    }
+                };
+                
+                // Connect the audio graph
+                source.connect(audioWorkletNode);
+                audioWorkletNode.connect(audioContext.destination);
+                
+                status.textContent = 'Microphone ready';
+                status.className = 'status success';
+                debug("Audio system initialized");
+                return true;
+            } catch (error) {
+                status.textContent = 'Error accessing microphone: ' + error.message;
+                status.className = 'status error';
+                debug(`Microphone error: ${error.message}`);
+                return false;
+            }
+        }
+
+        function stopRecording() {
+            if (isRecording) {
+                if (audioStream) {
+                    // Stop all audio tracks
+                    audioStream.getTracks().forEach(track => track.stop());
+                    audioStream = null;
+                }
+                
+                if (audioContext) {
+                    audioContext.close();
+                    audioContext = null;
+                }
+                
+                micButton.classList.remove('recording');
+                status.textContent = 'Stopped recording';
+                status.className = 'status';
+                isRecording = false;
+                debug("Recording stopped");
+            }
+        }
+
+        // Toggle recording
+        micButton.addEventListener('click', async () => {
+            if (socket?.readyState !== WebSocket.OPEN) {
+                status.textContent = 'Cannot record: Not connected to server';
+                status.className = 'status error';
+                debug("Recording attempted but not connected to server");
+                return;
+            }
+            
+            if (micButton.classList.contains('disabled')) {
+                return;
+            }
+            
+            if (!isRecording) {
+                const success = await setupAudio();
+                if (!success) return;
+                
+                micButton.classList.add('recording');
+                status.textContent = 'Recording...';
+                status.className = 'status';
+                isRecording = true;
+                debug("Recording started");
+            } else {
+                stopRecording();
+            }
+        });
+        
+        // Clear transcript
+        clearBtn.addEventListener('click', () => {
+            transcript.textContent = '';
+            debug("Transcript cleared");
+        });
+        
+        // Manual reconnect
+        reconnectBtn.addEventListener('click', () => {
+            debug("Manual reconnection requested");
+            if (socket && socket.readyState !== WebSocket.CLOSED) {
+                socket.close();
+            }
+            connectWebSocket();
+        });
+        
+        // Handle page visibility changes
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                // Check connection when page becomes visible
+                if (socket?.readyState !== WebSocket.OPEN) {
+                    status.textContent = 'Connection lost while away';
+                    status.className = 'status warning';
+                    debug("Page became visible, reconnecting");
+                    connectWebSocket();
+                }
+            }
+        });
+        
+        window.addEventListener('load', () => {
+            debug("Page loaded");
+        });
+    </script>
+</body>
+</html> 

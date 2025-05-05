@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSM Audio Playback Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #ddd;
+        }
+        h1, h2 {
+            color: #ddd;
+        }
+        button {
+            background: #4d78cc;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 15px;
+            margin: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .status {
+            margin: 15px 0;
+            padding: 10px;
+            background-color: #252526;
+            border: 1px solid #444;
+            border-radius: 4px;
+        }
+        .log {
+            height: 500px;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #252526;
+            border: 1px solid #444;
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-top: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            background-color: #252526;
+            color: #ddd;
+            border: 1px solid #444;
+            padding: 10px;
+            font-family: monospace;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSM Audio Playback Test</h1>
+    
+    <div class="status" id="status">Ready</div>
+    
+    <h2>Audio Tests</h2>
+    
+    <button id="testOscillator">Test Oscillator</button>
+    <button id="testInt16">Test Int16 Audio</button>
+    <button id="testWebSocket">Test WebSocket</button>
+    
+    <h2>Custom Base64 Audio</h2>
+    <p>Paste base64-encoded Int16 PCM audio data here:</p>
+    <textarea id="base64Input" placeholder="Paste base64 audio data here..."></textarea>
+    <button id="playBase64">Play Base64 Audio</button>
+    
+    <div class="log" id="log"></div>
+    
+    <script>
+        // DOM elements
+        const status = document.getElementById('status');
+        const log = document.getElementById('log');
+        const base64Input = document.getElementById('base64Input');
+        
+        // Audio context
+        let audioContext = null;
+        
+        // Logger function
+        function logger(message) {
+            const timestamp = new Date().toISOString().substring(11, 23);
+            log.innerHTML = `[${timestamp}] ${message}\n` + log.innerHTML;
+            console.log(`[${timestamp}] ${message}`);
+        }
+        
+        // Initialize audio context
+        function initAudioContext() {
+            if (audioContext) return audioContext;
+            
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+                logger(`AudioContext initialized with sample rate ${audioContext.sampleRate}Hz`);
+                
+                // Resume if suspended
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume().then(() => {
+                        logger('AudioContext resumed');
+                    });
+                }
+                
+                status.textContent = `Audio context initialized (${audioContext.state})`;
+                return audioContext;
+            } catch (err) {
+                logger(`Error initializing AudioContext: ${err.message}`);
+                status.textContent = `Error: ${err.message}`;
+                return null;
+            }
+        }
+        
+        // Test oscillator
+        function testOscillator() {
+            const ctx = initAudioContext();
+            if (!ctx) return;
+            
+            try {
+                // Create oscillator
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                oscillator.type = 'sine';
+                oscillator.frequency.value = 440; // A4 note
+                gainNode.gain.value = 0.2; // 20% volume
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                
+                oscillator.start();
+                
+                status.textContent = 'Playing 440Hz test tone...';
+                logger('Playing 440Hz test tone for 1 second');
+                
+                // Stop after 1 second
+                setTimeout(() => {
+                    oscillator.stop();
+                    status.textContent = 'Test tone completed';
+                    logger('Test tone completed');
+                }, 1000);
+            } catch (err) {
+                logger(`Error playing test tone: ${err.message}`);
+                status.textContent = `Error: ${err.message}`;
+            }
+        }
+        
+        // Test Int16 audio playback
+        function testInt16Audio() {
+            const ctx = initAudioContext();
+            if (!ctx) return;
+            
+            try {
+                // Create a 1-second sine wave at 440Hz
+                const sampleRate = 16000;
+                const duration = 1.0;
+                const numSamples = Math.floor(sampleRate * duration);
+                
+                // Generate Int16 data
+                const int16Data = new Int16Array(numSamples);
+                for (let i = 0; i < numSamples; i++) {
+                    // Generate a sine wave
+                    const value = Math.sin(2 * Math.PI * 440 * i / sampleRate);
+                    // Convert to int16 range (-32768 to 32767)
+                    int16Data[i] = Math.floor(value * 16384);
+                }
+                
+                logger(`Generated ${numSamples} samples of Int16 sine wave data`);
+                
+                // Convert to Float32
+                const floatData = new Float32Array(numSamples);
+                for (let i = 0; i < numSamples; i++) {
+                    floatData[i] = int16Data[i] / 32768.0;
+                }
+                
+                // Create buffer
+                const buffer = ctx.createBuffer(1, numSamples, sampleRate);
+                buffer.getChannelData(0).set(floatData);
+                
+                // Play buffer
+                const source = ctx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(ctx.destination);
+                
+                source.start();
+                status.textContent = 'Playing Int16 test audio...';
+                logger('Playing Int16 test audio (1 second, 440Hz)');
+                
+                source.onended = () => {
+                    status.textContent = 'Int16 test completed';
+                    logger('Int16 test audio completed');
+                };
+            } catch (err) {
+                logger(`Error playing Int16 test: ${err.message}`);
+                status.textContent = `Error: ${err.message}`;
+            }
+        }
+        
+        // Test WebSocket connection and audio playback
+        function testWebSocket() {
+            const ctx = initAudioContext();
+            if (!ctx) return;
+            
+            try {
+                // Get WebSocket URL
+                const hostname = window.location.hostname || 'localhost';
+                const port = 8765;
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+                const wsUrl = `${wsProtocol}${hostname}:${port}`;
+                
+                logger(`Connecting to WebSocket: ${wsUrl}`);
+                status.textContent = 'Connecting to WebSocket...';
+                
+                const socket = new WebSocket(wsUrl);
+                
+                socket.onopen = () => {
+                    logger('WebSocket connected');
+                    status.textContent = 'Connected. Sending test message...';
+                    
+                    // Send test message
+                    const testMessage = {
+                        text: "This is a test message to verify audio playback in the browser.",
+                        contextId: `test-${Date.now()}`
+                    };
+                    
+                    socket.send(JSON.stringify(testMessage));
+                    logger(`Sent test message: ${JSON.stringify(testMessage)}`);
+                    
+                    // Send EOS to trigger generation
+                    setTimeout(() => {
+                        socket.send(JSON.stringify({
+                            operation: "eos",
+                            contextId: testMessage.contextId
+                        }));
+                        logger('Sent EOS signal');
+                    }, 500);
+                };
+                
+                socket.onmessage = (event) => {
+                    try {
+                        const response = JSON.parse(event.data);
+                        logger(`Received response type: ${response.type}`);
+                        
+                        if (response.type === "chunk" && response.data) {
+                            status.textContent = 'Received audio data. Playing...';
+                            logger(`Received audio chunk. Size: ${response.data.length} characters`);
+                            
+                            if (response.metadata) {
+                                logger(`Audio metadata: ${JSON.stringify(response.metadata)}`);
+                            } else {
+                                logger('No metadata received with audio');
+                            }
+
+                            // Play the audio data
+                            playBase64Audio(response.data, response.metadata);
+
+                            // Save to textarea for manual replay
+                            base64Input.value = response.data;
+                        } else if (response.type === "error") {
+                            status.textContent = `Error: ${response.error}`;
+                            logger(`Server error: ${response.error}`);
+                        } else if (response.type === "ack") {
+                            logger('Received acknowledgment');
+                        } else {
+                            logger(`Received unknown response type: ${response.type}`);
+                        }
+                    } catch (err) {
+                        logger(`Error parsing message: ${err.message}`);
+                    }
+                };
+                
+                socket.onclose = () => {
+                    logger('WebSocket connection closed');
+                    status.textContent = 'WebSocket connection closed';
+                };
+                
+                socket.onerror = (error) => {
+                    logger('WebSocket error');
+                    status.textContent = 'WebSocket error';
+                };
+            } catch (err) {
+                logger(`WebSocket test error: ${err.message}`);
+                status.textContent = `Error: ${err.message}`;
+            }
+        }
+        
+        // Play base64-encoded audio
+        function playBase64Audio(base64Data, metadata = null) {
+            const ctx = initAudioContext();
+            if (!ctx) return;
+            
+            try {
+                // Convert base64 to ArrayBuffer
+                const binaryString = window.atob(base64Data);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                
+                for (let i = 0; i < len; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                logger(`Decoded ${len} bytes from base64 data`);
+                
+                if (metadata) {
+                    logger(`Audio metadata: ${JSON.stringify(metadata)}`);
+                }
+
+                // Try direct Int16 playback first (more reliable for our CSM audio format)
+                try {
+                    // Use metadata if available, otherwise use defaults
+                            const sampleRate = metadata?.sample_rate || 16000;
+                    const channels = metadata?.channels || 1;
+
+                    // Assume Int16 data
+                            const view = new Int16Array(bytes.buffer);
+                            
+                    logger(`Playing direct Int16 PCM: ${view.length} samples, ${channels} channels, ${sampleRate}Hz`);
+                            
+                    // Convert Int16 to Float32 for Web Audio API
+                            const floatData = new Float32Array(view.length);
+                            for (let i = 0; i < view.length; i++) {
+                        // Convert from int16 (-32768 to 32767) to float (-1.0 to 1.0)
+                                floatData[i] = view[i] / 32768.0;
+                            }
+                            
+                    // Create audio buffer
+                    const buffer = ctx.createBuffer(channels, floatData.length, sampleRate);
+
+                    // Fill the buffer with our audio data
+                            buffer.getChannelData(0).set(floatData);
+                            
+                    // Create source node
+                            const source = ctx.createBufferSource();
+                            source.buffer = buffer;
+
+                    // Create gain node for volume control
+                    const gainNode = ctx.createGain();
+                    gainNode.gain.value = 1.0; // Full volume
+                            
+                    // Connect audio graph
+                    source.connect(gainNode);
+                    gainNode.connect(ctx.destination);
+                    source.start(0);
+                    status.textContent = 'Playing audio...';
+                    logger(`Playing audio: duration=${(floatData.length/sampleRate).toFixed(2)}s`);
+                            
+                            source.onended = () => {
+                                status.textContent = 'Audio playback completed';
+                        logger('Audio playback completed');
+                            };
+
+                    return; // Exit if direct playback succeeds
+                        } catch (err) {
+                    logger(`Direct Int16 playback failed: ${err.message}. Trying standard decoding...`);
+                        }
+
+                // If direct playback fails, fall back to standard decoding
+                ctx.decodeAudioData(bytes.buffer,
+                    (buffer) => {
+                        logger(`Successfully decoded audio: ${buffer.duration.toFixed(2)}s, ${buffer.numberOfChannels} channels, ${buffer.sampleRate}Hz`);
+
+                        // Play decoded audio
+                        const source = ctx.createBufferSource();
+                        source.buffer = buffer;
+                        source.connect(ctx.destination);
+                        source.start(0);
+
+                        status.textContent = 'Playing decoded audio...';
+
+                        source.onended = () => {
+                            status.textContent = 'Audio playback completed';
+                            logger('Audio playback completed');
+                        };
+                    },
+                    (error) => {
+                        logger(`Both playback methods failed: ${error}`);
+                        status.textContent = `Error: Playback failed`;
+            }
+                );
+            } catch (err) {
+                logger(`Error playing base64 audio: ${err.message}`);
+                status.textContent = `Error: ${err.message}`;
+        }
+        }
+        
+        // Event listeners
+        document.getElementById('testOscillator').addEventListener('click', testOscillator);
+        document.getElementById('testInt16').addEventListener('click', testInt16Audio);
+        document.getElementById('testWebSocket').addEventListener('click', testWebSocket);
+        document.getElementById('playBase64').addEventListener('click', () => {
+            const base64Data = base64Input.value.trim();
+            if (base64Data) {
+                playBase64Audio(base64Data);
+            } else {
+                status.textContent = 'Please enter base64 audio data';
+                logger('No base64 data provided');
+            }
+        });
+        
+        // Initial setup
+        logger('Audio Test Page loaded. Click a button to begin testing.');
+        
+        // Try to initialize audio context on page load (for iOS/Safari)
+        document.addEventListener('click', function initAudioOnFirstClick() {
+            initAudioContext();
+            document.removeEventListener('click', initAudioOnFirstClick);
+        }, { once: true });
+    </script>
+</body>
+</html>
