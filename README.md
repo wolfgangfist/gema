@@ -237,3 +237,6 @@ Johan Schalkwyk, Ankit Kumar, Dan Lyth, Sefik Emre Eskimez, Zack Hodari, Cinjon 
 
 ## Streaming, Realtime Demo and Finetuning Implementation
 David Browne
+
+## Support me
+Support this project on Ko-fi: https://ko-fi.com/davidbrowne17
