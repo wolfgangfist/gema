@@ -17,6 +17,7 @@ class LLMInterface:
             tensor_parallel_size=1,  # Adjust based on number of GPUs available
             gpu_memory_utilization=0.6,
             max_model_len=max_tokens,
+            swap_space=0,
             trust_remote_code=True,
             dtype="auto",  # Automatically selects appropriate precision
         )

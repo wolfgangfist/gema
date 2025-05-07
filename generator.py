@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 import os
 from typing import List, Tuple, Generator as PyGenerator, Optional, Callable
 import time
@@ -566,8 +567,8 @@ def load_csm_1b_local(model_path: str, device: str = "cuda", audio_num_codebooks
 
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
 
-    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
-    model.forward = torch.compile(model.forward, mode="max-autotune")
+    model.backbone = torch.compile(model.backbone,mode='reduce-overhead', fullgraph=True, backend='inductor')
+    model.decoder = torch.compile(model.decoder,mode='reduce-overhead', fullgraph=True, backend='inductor')
 
     model.to(device=device, dtype=dtype)
 
@@ -592,21 +593,142 @@ def load_csm_1b_local(model_path: str, device: str = "cuda", audio_num_codebooks
 
     return generator
 
-
-def warmup_generator(gen: Generator, warmup_text: str = "Hello, this is just a quick test warmup itll speed it up.", speaker_id: int = 0):
-        print("Performing generator warmup...")
-        warmup_audio = next(gen.generate_stream(
-            text=warmup_text,
-            speaker=speaker_id,
-            context=[],
-            max_audio_length_ms=10000,
-            temperature=0.8,
-            topk=50
-        ))
-        del warmup_audio
-        if torch.cuda.is_available():
+def warmup_generator(gen: Generator, warmup_text: str = "Hello, this is a comprehensive warmup text that will exercise the model's generation capabilities.", speaker_id: int = 0):
+    """
+    Perform an extremely aggressive warmup to drastically reduce first-generation latency.
+    """
+    print("Starting maximum-intensity warmup sequence...")
+    
+    # Directly access and optimize the model's internal state
+    if hasattr(gen._model, 'backbone') and hasattr(gen._model.backbone, 'positional_embedding'):
+        # Force calculation of position embeddings to ensure they're cached
+        with torch.inference_mode():
+            positions = torch.arange(0, 2048).to(gen.device)
+            _ = gen._model.backbone.positional_embedding(positions)
+    
+    # Pre-allocate CUDA memory to prevent fragmentation during generation
+    if torch.cuda.is_available():
+        print("Optimizing GPU memory allocation...")
+        # Try to reserve a large chunk of memory
+        try:
+            import math
+            reserved_memory = []
+            # Reserve multiple blocks of different sizes
+            for size_mb in [128, 256, 512, 256, 128, 64]:
+                size = int(size_mb * 1024 * 1024 / 4)  # Convert MB to float32 elements
+                tensor_size = int(math.sqrt(size))
+                tensor = torch.ones((tensor_size, tensor_size), device=gen.device, dtype=torch.float32)
+                tensor = tensor * 1.0  # Force allocation
+                reserved_memory.append(tensor)
+            torch.cuda.synchronize()
+            
+            # Now free the memory
+            for tensor in reserved_memory:
+                del tensor
+            reserved_memory = []
             torch.cuda.empty_cache()
-        print("Warmup complete.")
+            torch.cuda.synchronize()
+        except Exception as e:
+            print(f"Memory pre-allocation: {e}")
+    
+    # Create multiple dummy audio segments with varying characteristics
+    print("Creating diverse audio contexts...")
+    audio_segments = []
+    
+    # Create 3 different audio patterns
+    for i in range(3):
+        length = 24000 * (i + 1)  # 1s, 2s, 3s
+        audio = torch.zeros(length).to(gen.device)
+        
+        # Add different patterns to each segment
+        if i == 0:
+            # Sine wave pattern
+            import math
+            t = torch.linspace(0, 8 * math.pi, length).to(gen.device)
+            audio = torch.sin(t) * 0.1
+        elif i == 1:
+            # Random noise pattern
+            audio = torch.randn(length).to(gen.device) * 0.05
+        else:
+            # Pulse pattern
+            audio[::800] = 0.2
+            audio[::801] = -0.2
+        
+        segment = Segment(
+            speaker=speaker_id,
+            text=f"Warmup segment {i+1} with {length/24000:.1f}s of audio.",
+            audio=audio
+        )
+        audio_segments.append(segment)
+    
+    # Force compilation of critical model components
+    print("Forcing compilation of critical components...")
+    
+    # Directly exercise the audio tokenizer with real data
+    with torch.inference_mode():
+        for segment in audio_segments:
+            # Force tokenization of both text and audio
+            gen._tokenize_segment(segment)
+    
+    # Exercise the model's generation capabilities directly
+    with torch.inference_mode():
+        
+        # Generate some sample frames to ensure model is compiled
+        dummy_tokens = torch.ones(1, 10, gen._num_codebooks+1).long().to(gen.device)
+        dummy_mask = torch.ones(1, 10, gen._num_codebooks+1).bool().to(gen.device)
+        dummy_pos = torch.arange(0, 10).unsqueeze(0).to(gen.device)
+        
+        # Generate multiple frames with different parameters
+        for temp in [0.6, 0.7, 0.8]:
+            for topk in [20, 30, 40]:
+                _ = gen._model.generate_frame(dummy_tokens, dummy_mask, dummy_pos, temp, topk)
+    
+    gen._text_token_cache.clear()
+    
+    print("Running final generation with exact same setup as a real request...")
+    
+    final_text = "This is the final warmup that exactly matches a real generation request."
+    
+    # First tokenize the text - to fill the cache
+    gen._tokenize_text_segment(final_text, speaker_id)
+    
+    try:
+        # Now run a complete generation with a single context segment
+        generate_streaming_audio(
+            generator=gen,
+            text=final_text, 
+            speaker=speaker_id,
+            context=[audio_segments[0]],  # Just one context segment
+            output_file="warmup_final.wav",
+            max_audio_length_ms=6000,
+            temperature=0.7,
+            topk=30,
+            play_audio=False
+        )
+    except Exception as e:
+        print(f"Final warmup run exception (ignorable): {e}")
+    
+    # Force final synchronization and memory optimization
+    if torch.cuda.is_available():
+        print("Final GPU optimization...")
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        
+        try:
+            # Allocate a large tensor to force compaction
+            large_tensor = torch.empty(int(1e9//4), dtype=torch.float, device=gen.device)
+            # Immediately delete it
+            del large_tensor
+        except RuntimeError:
+            # Expected if there's not enough memory
+            pass
+            
+        # Final cleanup
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    print("Maximum-intensity warmup complete. First generation should now be MUCH faster.")
+
 def load_csm_1b(device: str = "cuda") -> Generator:
     """
     Load the CSM-1B model with extreme optimizations for real-time performance.
@@ -626,8 +748,9 @@ def load_csm_1b(device: str = "cuda") -> Generator:
     model = Model.from_pretrained("sesame/csm-1b")
     
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
-    model.forward = torch.compile(model.forward, mode="max-autotune")
+    model.backbone = torch.compile(model.backbone,mode='reduce-overhead', fullgraph=True, backend='inductor')
+    model.decoder = torch.compile(model.decoder,mode='reduce-overhead', fullgraph=True, backend='inductor')
+
     model.to(device=device, dtype=dtype)
     
     print("Model compilation complete. Creating generator...")
@@ -693,7 +816,6 @@ def stream_audio_to_wav(filename, sample_rate):
         
     return write_chunk, close
 
-
 def generate_streaming_audio(
     generator: Generator,
     text: str,
@@ -735,7 +857,17 @@ def generate_streaming_audio(
                         while not stop_event.is_set() or not audio_queue.empty():
                             try:
                                 chunk = audio_queue.get(timeout=0.5)
+                                if isinstance(chunk, torch.Tensor) and chunk.numel() == 0:
+                                    audio_queue.task_done()
+                                    continue
+                                    
                                 audio_np = chunk.numpy() if isinstance(chunk, torch.Tensor) else chunk
+                                
+                                # Skip very short chunks (likely noise)
+                                if len(audio_np) < 100:
+                                    audio_queue.task_done()
+                                    continue
+                                    
                                 # Resample to device's supported rate
                                 resampled = librosa.resample(
                                     audio_np, 
@@ -743,11 +875,18 @@ def generate_streaming_audio(
                                     target_sr=int(supported_rate)
                                 )
                                 sd.play(resampled, supported_rate, blocking=True)
+                                # Add a small delay to ensure audio finishes playing
+                                time.sleep(0.05)
                                 audio_queue.task_done()
                             except queue.Empty:
-                                pass
+                                # If queue empty but not stopping, keep trying
+                                if not stop_event.is_set():
+                                    continue
+                                else:
+                                    break
                             except Exception as e:
                                 print(f"Playback error: {e}")
+                                audio_queue.task_done()
                 except ImportError:
                     print("Librosa not found. Using direct playback which may cause sample rate warnings.")
                     need_resampling = False
@@ -757,16 +896,33 @@ def generate_streaming_audio(
                     while not stop_event.is_set() or not audio_queue.empty():
                         try:
                             chunk = audio_queue.get(timeout=0.5)
+                            if isinstance(chunk, torch.Tensor) and chunk.numel() == 0:
+                                audio_queue.task_done()
+                                continue
+                                
                             audio_np = chunk.numpy() if isinstance(chunk, torch.Tensor) else chunk
+                            
+                            # Skip very short chunks (likely noise)
+                            if len(audio_np) < 100:
+                                audio_queue.task_done()
+                                continue
+                                
                             sd.play(audio_np, generator.sample_rate, blocking=True)
+                            # Add a small delay to ensure audio finishes playing
+                            time.sleep(0.05)
                             audio_queue.task_done()
                         except queue.Empty:
-                            pass
+                            # If queue empty but not stopping, keep trying
+                            if not stop_event.is_set():
+                                continue
+                            else:
+                                break
                         except Exception as e:
                             print(f"Playback error: {e}")
+                            audio_queue.task_done()
             
             # Start playback thread
-            playback_thread = threading.Thread(target=audio_playback_worker, daemon=True)
+            playback_thread = threading.Thread(target=audio_playback_worker, daemon=False)
             playback_thread.start()
             
         except ImportError:
@@ -800,7 +956,7 @@ def generate_streaming_audio(
         # Send to audio player if enabled
         if play_audio and audio_queue is not None:
             try:
-                audio_queue.put(chunk, timeout=0.1)
+                audio_queue.put(chunk, timeout=1.0)
             except queue.Full:
                 pass  # Skip if queue is full to avoid blocking
     
@@ -825,8 +981,7 @@ def generate_streaming_audio(
         if platform.system() == 'Windows':
             process.nice(psutil.HIGH_PRIORITY_CLASS)
         else:
-            # Use higher priority for Linux (-10 instead of 0)
-            process.nice(-1)  # -20 to 19, lower is higher priority
+            process.nice(-1)
     except (ImportError, PermissionError, psutil.AccessDenied):
         pass
     
@@ -835,6 +990,8 @@ def generate_streaming_audio(
     
     # Generate audio in chunks, catching possible errors
     frame_count = 0
+    audio_chunks = []  # Store all chunks for possible use at the end
+    
     try:
         for audio_chunk in generator.generate_stream(
             text=text,
@@ -846,6 +1003,7 @@ def generate_streaming_audio(
             on_chunk_generated=on_chunk_generated
         ):
             frame_count += 1
+            audio_chunks.append(audio_chunk)  # Store the chunk
             
             # Print timing info less frequently to reduce overhead
             if frame_count % 10 == 0:
@@ -865,6 +1023,19 @@ def generate_streaming_audio(
     if 'dummy_tensors' in locals():
         del dummy_tensors
     
+    # Ensure all chunks are properly processed
+    if play_audio and audio_queue is not None:
+        print("Waiting for playback queue to finish...")
+        try:
+            timeout_start = time.time()
+            while not audio_queue.empty() and time.time() - timeout_start < 5.0:
+                time.sleep(0.1)
+        except:
+            pass
+    
+    # Add a small delay to ensure everything is processed
+    time.sleep(0.5)
+    
     # Signal audio worker that generation is complete
     stop_event.set()
     
@@ -874,7 +1045,30 @@ def generate_streaming_audio(
     # Wait for audio playback to complete if enabled
     if play_audio and 'playback_thread' in locals():
         print("Waiting for audio playback to complete...")
+        
+        # First, ensure the queue is empty
+        try:
+            timeout_start = time.time()
+            while not audio_queue.empty() and time.time() - timeout_start < 5.0:
+                time.sleep(0.1)
+        except:
+            pass
+            
+        # Set a flag to indicate complete audio playback is needed
+        if hasattr(sd, 'wait'):
+            try:
+                sd.wait()
+            except:
+                pass
+                
+        # Join the playback thread with timeout
         playback_thread.join(timeout=5.0)
+        
+        # Force sounddevice to stop if it's still playing
+        try:
+            sd.stop()
+        except:
+            pass
     
     # Calculate and print detailed performance metrics
     end_time = time.time()
