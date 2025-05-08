@@ -159,7 +159,7 @@ def transcribe_audio(audio_data, sample_rate):
     try:
         with torch.jit.optimized_execution(False):
             whisper_model.to("cuda")
-            result = whisper_pipe(audio_np)
+            result = whisper_pipe(audio_np, generate_kwargs={"language": "english"}) 
             whisper_model.to("cpu")
             return result["text"]
     except:
@@ -429,7 +429,7 @@ saved_audio_paths = {
         1: []   # User
     }
 }
-MAX_AUDIO_FILES = 10
+MAX_AUDIO_FILES = 8
 
 def save_audio_and_trim(path, session_id, speaker_id, tensor, sample_rate):
     """
@@ -462,12 +462,81 @@ def save_audio_and_trim(path, session_id, speaker_id, tensor, sample_rate):
                 os.remove(old_path)
                 logger.info(f"Removed old audio file from other speaker: {old_path}")
 
-MAX_SEGMENTS = 10
+MAX_SEGMENTS = 8
 
 def add_segment(text, speaker_id, audio_tensor):
-    reference_segments.append(Segment(text=text, speaker=speaker_id, audio=audio_tensor))
+    """
+    Add a new segment and ensure the total context stays within token limits.
+    Uses proper tokenization to count tokens accurately against the 2048 token limit.
+    
+    Args:
+        text: Text content of the segment
+        speaker_id: ID of the speaker (0 for AI, 1 for user)
+        audio_tensor: Audio data as a tensor
+    """
+    global reference_segments, generator
+    
+    # Add the new segment
+    new_segment = Segment(text=text, speaker=speaker_id, audio=audio_tensor)
+    reference_segments.append(new_segment)
+    
+    # First trim by MAX_SEGMENTS if needed
     while len(reference_segments) > MAX_SEGMENTS:
         reference_segments.pop(0)
+    
+    # Then check and trim by token count
+    # We need to access the model's tokenizer to properly count tokens
+    if hasattr(generator, '_text_tokenizer'):
+        total_tokens = 0
+        for segment in reference_segments:
+            # Count text tokens using the actual tokenizer
+            tokens = generator._text_tokenizer.encode(f"[{segment.speaker}]{segment.text}")
+            total_tokens += len(tokens)
+            
+            # Each audio segment also consumes tokens - audio is encoded as frames
+            # Approximate token usage based on audio duration
+            if segment.audio is not None:
+                audio_frames = segment.audio.size(0) // 300  # Approximate frame count
+                total_tokens += audio_frames
+        
+        # Remove oldest segments until we're under the token limit
+        while reference_segments and total_tokens > 2048:
+            removed = reference_segments.pop(0)
+            # Recalculate tokens for the removed segment
+            removed_tokens = len(generator._text_tokenizer.encode(f"[{removed.speaker}]{removed.text}"))
+            if removed.audio is not None:
+                removed_audio_frames = removed.audio.size(0) // 300
+                removed_tokens += removed_audio_frames
+            total_tokens -= removed_tokens
+            
+        logger.info(f"Segments: {len(reference_segments)}, total tokens: {total_tokens}/2048")
+    else:
+        # Fallback if we can't access the tokenizer - make a rough estimate
+        logger.warning("Unable to access tokenizer - falling back to word-based estimation")
+        
+        def estimate_tokens(segment):
+            # Rough token estimation based on words and punctuation
+            words = segment.text.split()
+            punctuation = sum(1 for char in segment.text if char in ".,!?;:\"'()[]{}")
+            text_tokens = len(words) + punctuation
+            
+            # Estimate audio tokens
+            audio_tokens = 0
+            if segment.audio is not None:
+                audio_frames = segment.audio.size(0) // 300  # Approximate frame count
+                audio_tokens = audio_frames
+                
+            return text_tokens + audio_tokens
+        
+        # Calculate initial token count
+        total_estimated_tokens = sum(estimate_tokens(segment) for segment in reference_segments)
+        
+        # Remove oldest segments until we're under the token limit
+        while reference_segments and total_estimated_tokens > 2048:
+            removed = reference_segments.pop(0)
+            total_estimated_tokens -= estimate_tokens(removed)
+            
+        logger.info(f"Segments: {len(reference_segments)}, estimated tokens: {total_estimated_tokens}/2048")
 
 def preprocess_text_for_tts(text):
     """
