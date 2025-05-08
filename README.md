@@ -198,7 +198,7 @@ torchaudio.save("audio.wav", audio.unsqueeze(0).cpu(), generator.sample_rate)
 
 Our optimized version includes several performance enhancements:
 
-- **Streaming Generation**: Processes and outputs audio in chunks instead of waiting for the entire generation achieving a Real-time factor (RTF): 0.5x (target: <1.0) on a 4090. (10 seconds of audio takes 5 seconds to generate)
+- **Streaming Generation**: Processes and outputs audio in chunks instead of waiting for the entire generation achieving a Real-time factor (RTF): 0.28x (target: <1.0) on a 4090.
 - **Frame Batching**: Processes multiple frames at once for better GPU utilization
 - **Half-precision Inference**: Uses bfloat16/float16 for faster processing
 - **CUDA Optimizations**: Enables cuDNN benchmarking and Flash Attention where available
