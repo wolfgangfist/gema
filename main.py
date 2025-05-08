@@ -19,15 +19,17 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from typing import List, Dict, Any, Optional, Callable
-from generator import Generator, Segment, load_csm_1b_local, generate_streaming_audio
+from typing import Optional
+from generator import Segment, load_csm_1b_local
 from llm_interface import LLMInterface
 from rag_system import RAGSystem 
-from vad import AudioStreamProcessor, VoiceActivityDetector
+from vad import AudioStreamProcessor
 from pydantic import BaseModel
 import logging
 from config import ConfigManager
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+import re
+
 speaker_counters = {
     0: 0,  # AI
     1: 0   # User
@@ -68,6 +70,10 @@ class CompanionConfig(BaseModel):
     system_prompt: str
     reference_audio_path: str
     reference_text: str
+    reference_audio_path2: Optional[str] = None  # optional field
+    reference_text2: Optional[str] = None  # optional field
+    reference_audio_path3: Optional[str] = None  # optional field
+    reference_text3: Optional[str] = None  # optional field
     model_path: str
     llm_path: str
     max_tokens: int = 8192
@@ -127,25 +133,47 @@ async def process_message_queue():
                     active_connections.remove(client)
         message_queue.task_done()
 
-def load_reference_segment(audio_path: str,
-                           text: str,
-                           speaker_id: int = 0):
-    """Load / resample a reference clip for voice‑cloning."""
+def load_reference_segments(config_data: CompanionConfig):
+    """Load multiple reference clips for voice‑cloning."""
     global reference_segments
-
-    if not os.path.isfile(audio_path):
-        logger.warning(f"Reference audio '{audio_path}' not found.")
-        return
-
-    logger.info(f"Loading reference audio: {audio_path}")
-    wav, sr = torchaudio.load(audio_path)
-    wav = torchaudio.functional.resample(wav.squeeze(0),
+    reference_segments = []
+    
+    # Load primary reference (required)
+    if os.path.isfile(config_data.reference_audio_path):
+        logger.info(f"Loading primary reference audio: {config_data.reference_audio_path}")
+        wav, sr = torchaudio.load(config_data.reference_audio_path)
+        wav = torchaudio.functional.resample(wav.squeeze(0),
                                          orig_freq=sr,
                                          new_freq=24_000)
-    reference_segments = [Segment(text=text,
-                                  speaker=speaker_id,
-                                  audio=wav)]
-    logger.info("Reference audio loaded.")
+        reference_segments.append(Segment(text=config_data.reference_text,
+                                  speaker=config_data.voice_speaker_id,
+                                  audio=wav))
+    else:
+        logger.warning(f"Primary reference audio '{config_data.reference_audio_path}' not found.")
+    
+    # Load second reference (optional)
+    if config_data.reference_audio_path2 and os.path.isfile(config_data.reference_audio_path2):
+        logger.info(f"Loading second reference audio: {config_data.reference_audio_path2}")
+        wav, sr = torchaudio.load(config_data.reference_audio_path2)
+        wav = torchaudio.functional.resample(wav.squeeze(0),
+                                         orig_freq=sr,
+                                         new_freq=24_000)
+        reference_segments.append(Segment(text=config_data.reference_text2,
+                                  speaker=config_data.voice_speaker_id,
+                                  audio=wav))
+    
+    # Load third reference (optional)
+    if config_data.reference_audio_path3 and os.path.isfile(config_data.reference_audio_path3):
+        logger.info(f"Loading third reference audio: {config_data.reference_audio_path3}")
+        wav, sr = torchaudio.load(config_data.reference_audio_path3)
+        wav = torchaudio.functional.resample(wav.squeeze(0),
+                                         orig_freq=sr,
+                                         new_freq=24_000)
+        reference_segments.append(Segment(text=config_data.reference_text3,
+                                  speaker=config_data.voice_speaker_id,
+                                  audio=wav))
+    
+    logger.info(f"Loaded {len(reference_segments)} reference audio segments.")
 
 def transcribe_audio(audio_data, sample_rate):
     global whisper_model
@@ -193,17 +221,14 @@ def initialize_models(config_data: CompanionConfig):
                    "on_speech_end":   on_speech_end},
     )
 
-    if os.path.isfile(config_data.reference_audio_path):
-        load_reference_segment(config_data.reference_audio_path,
-                               config_data.reference_text,
-                               config_data.voice_speaker_id)
+    load_reference_segments(config_data)
 
     start_model_thread()
 
     logger.info("Compiling / warming‑up voice model …")
     t0 = time.time()
 
-    # send a dummy request; max 0.5 s of audio, result discarded
+    # send a dummy request; max 0.5 s of audio, result discarded
     model_queue.put((
         "warm‑up.",                          # text
         config_data.voice_speaker_id,        # speaker
@@ -467,41 +492,61 @@ MAX_SEGMENTS = 8
 def add_segment(text, speaker_id, audio_tensor):
     """
     Add a new segment and ensure the total context stays within token limits.
-    Uses proper tokenization to count tokens accurately against the 2048 token limit.
+    Preserves the original reference segments when trimming.
     
     Args:
         text: Text content of the segment
         speaker_id: ID of the speaker (0 for AI, 1 for user)
         audio_tensor: Audio data as a tensor
     """
-    global reference_segments, generator
+    global reference_segments, generator, config
+    
+    # Count how many original reference segments we have (1-3)
+    num_reference_segments = 1  # We always have at least the primary reference
+    if hasattr(config, 'reference_audio_path2') and config.reference_audio_path2:
+        num_reference_segments += 1
+    if hasattr(config, 'reference_audio_path3') and config.reference_audio_path3:
+        num_reference_segments += 1
     
     # Add the new segment
     new_segment = Segment(text=text, speaker=speaker_id, audio=audio_tensor)
-    reference_segments.append(new_segment)
     
-    # First trim by MAX_SEGMENTS if needed
-    while len(reference_segments) > MAX_SEGMENTS:
-        reference_segments.pop(0)
+    # Keep original reference segments protected from trimming
+    protected_segments = reference_segments[:num_reference_segments] if len(reference_segments) >= num_reference_segments else reference_segments.copy()
+    
+    # Dynamic segments that can be trimmed
+    dynamic_segments = reference_segments[num_reference_segments:] if len(reference_segments) > num_reference_segments else []
+    dynamic_segments.append(new_segment)
+    
+    # First trim by MAX_SEGMENTS if needed, but never trim protected segments
+    while len(protected_segments) + len(dynamic_segments) > MAX_SEGMENTS:
+        if dynamic_segments:
+            dynamic_segments.pop(0)  # Remove the oldest non-protected segment
+        else:
+            break  # Safety check - shouldn't happen
+    
+    # Combine protected and dynamic segments
+    reference_segments = protected_segments + dynamic_segments
     
     # Then check and trim by token count
     # We need to access the model's tokenizer to properly count tokens
     if hasattr(generator, '_text_tokenizer'):
         total_tokens = 0
+        
+        # Count tokens in all segments
         for segment in reference_segments:
-            # Count text tokens using the actual tokenizer
             tokens = generator._text_tokenizer.encode(f"[{segment.speaker}]{segment.text}")
             total_tokens += len(tokens)
-            
-            # Each audio segment also consumes tokens - audio is encoded as frames
-            # Approximate token usage based on audio duration
             if segment.audio is not None:
                 audio_frames = segment.audio.size(0) // 300  # Approximate frame count
                 total_tokens += audio_frames
         
-        # Remove oldest segments until we're under the token limit
-        while reference_segments and total_tokens > 2048:
-            removed = reference_segments.pop(0)
+        # Remove oldest dynamic segments until we're under the token limit
+        # but never remove protected segments
+        while dynamic_segments and total_tokens > 2048:
+            removed = dynamic_segments.pop(0)
+            reference_segments.remove(removed)
+            
             # Recalculate tokens for the removed segment
             removed_tokens = len(generator._text_tokenizer.encode(f"[{removed.speaker}]{removed.text}"))
             if removed.audio is not None:
@@ -509,7 +554,9 @@ def add_segment(text, speaker_id, audio_tensor):
                 removed_tokens += removed_audio_frames
             total_tokens -= removed_tokens
             
-        logger.info(f"Segments: {len(reference_segments)}, total tokens: {total_tokens}/2048")
+        logger.info(f"Segments: {len(reference_segments)} " +
+                    f"({len(protected_segments)} protected, {len(dynamic_segments)} dynamic), " +
+                    f"total tokens: {total_tokens}/2048")
     else:
         # Fallback if we can't access the tokenizer - make a rough estimate
         logger.warning("Unable to access tokenizer - falling back to word-based estimation")
@@ -528,53 +575,38 @@ def add_segment(text, speaker_id, audio_tensor):
                 
             return text_tokens + audio_tokens
         
-        # Calculate initial token count
+        # Calculate total token count
         total_estimated_tokens = sum(estimate_tokens(segment) for segment in reference_segments)
         
-        # Remove oldest segments until we're under the token limit
-        while reference_segments and total_estimated_tokens > 2048:
-            removed = reference_segments.pop(0)
+        # Remove oldest dynamic segments until we're under the token limit
+        while dynamic_segments and total_estimated_tokens > 2048:
+            removed = dynamic_segments.pop(0)
+            idx = reference_segments.index(removed)
+            reference_segments.pop(idx)
             total_estimated_tokens -= estimate_tokens(removed)
             
-        logger.info(f"Segments: {len(reference_segments)}, estimated tokens: {total_estimated_tokens}/2048")
+        logger.info(f"Segments: {len(reference_segments)} " +
+                    f"({len(protected_segments)} protected, {len(dynamic_segments)} dynamic), " +
+                    f"estimated tokens: {total_estimated_tokens}/2048")
 
 def preprocess_text_for_tts(text):
     """
-
     Removes all punctuation except periods, commas, exclamation points, and question marks
-
     from the input text to create cleaner speech output while preserving intonation.
-
     Args:
-
     text (str): Input text with potential punctuation
-
     Returns:
-
     str: Cleaned text with only allowed punctuation
-
     """
-
-    import re
-
     # Define a regex pattern that matches all punctuation except periods, commas, exclamation points, and question marks
-
     # This includes: ; : " ' ` ~ @ # $ % ^ & * ( ) _ - + = [ ] { } \ | / < >
-
-    pattern = r'[^\w\s.,!?]'
-
+    pattern = r'[^\w\s.,!?\']'
     # Replace matched punctuation with empty string
-
     cleaned_text = re.sub(pattern, '', text)
-
     # normalize multiple spaces to single space
-
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
-
     # ensure there's a space after punctuation for better speech pacing
-
     cleaned_text = re.sub(r'([.,!?])(\S)', r'\1 \2', cleaned_text)
-
     return cleaned_text.strip()
 
 def audio_generation_thread(text, output_file):

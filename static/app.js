@@ -2,6 +2,7 @@ let ws;
 let micAnalyser, micContext, micSource, micStream;
 let outputAnalyser, outputAudioCtx;
 let lastConfig = null;
+let isLoading = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   await populateAudioDevices();
@@ -29,23 +30,27 @@ document.addEventListener('DOMContentLoaded', async () => {
       }, 500);
     }
 
-    if (data.type === "status" && data.message.includes("Models initialized")) {
-      console.log("Model initialization confirmed. Redirecting...");
-    
-      // Save config again just to be safe
-      localStorage.setItem('ai_config', JSON.stringify(lastConfig));
-    
-      // Close WebSocket before navigating
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
+    if (data.type === "status") {
+      if (data.message.includes("Models initialized")) {
+        console.log("Model initialization confirmed. Redirecting...");
+      
+        // Save config again just to be safe
+        localStorage.setItem('ai_config', JSON.stringify(lastConfig));
+      
+        // Close WebSocket before navigating
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+      
+        // Wait briefly to let server clean up, then redirect
+        setTimeout(() => {
+          window.location.href = "/chat";
+        }, 100);
+      } else if (data.message.includes("Initializing") || data.message.includes("Loading")) {
+        // Show that models are being loaded
+        showLoading(true, data.message);
       }
-    
-      // Wait briefly to let server clean up, then redirect
-      setTimeout(() => {
-        window.location.href = "/chat";
-      }, 100);
     }
-    
   };
 
   document.getElementById('testMicBtn').addEventListener('click', async () => {
@@ -105,10 +110,37 @@ document.addEventListener('DOMContentLoaded', async () => {
       output_id: getSelectedOutput(),
     };
     console.log("Sending config to backend...");
+    showLoading(true, "Initializing models, please wait...");
     ws.send(JSON.stringify({ type: "config", config: lastConfig }));
     // we wait for the backend to reply with model status before navigating
   });
 });
+
+function showLoading(show, message) {
+  const saveButton = document.getElementById('saveAndStart');
+  const loadingContainer = document.getElementById('loadingContainer');
+  const loadingSpinner = document.getElementById('loadingSpinner');
+  const loadingText = document.getElementById('loadingText');
+  
+  isLoading = show;
+  
+  if (show) {
+    saveButton.disabled = true;
+    saveButton.classList.add('opacity-50', 'cursor-not-allowed');
+    saveButton.classList.remove('hover:bg-green-500');
+    loadingContainer.classList.remove('hidden');
+    loadingSpinner.style.display = 'block';
+    if (message) {
+      loadingText.textContent = message;
+    }
+  } else {
+    saveButton.disabled = false;
+    saveButton.classList.remove('opacity-50', 'cursor-not-allowed');
+    saveButton.classList.add('hover:bg-green-500');
+    loadingContainer.classList.add('hidden');
+    loadingSpinner.style.display = 'none';
+  }
+}
 
 function getSelectedMic() {
   return document.getElementById('micSelect').value;
