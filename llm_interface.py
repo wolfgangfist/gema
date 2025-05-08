@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+import torch
 from vllm import LLM, SamplingParams
 
 class LLMInterface:
@@ -15,11 +16,11 @@ class LLMInterface:
         self.llm = LLM(
             model=model_path,
             tensor_parallel_size=1,  # Adjust based on number of GPUs available
-            gpu_memory_utilization=0.6,
+            gpu_memory_utilization=0.45,
             max_model_len=max_tokens,
             swap_space=0,
             trust_remote_code=True,
-            dtype="auto",  # Automatically selects appropriate precision
+            dtype=torch.float16,
         )
         
         # Store configuration for reference
