@@ -39,6 +39,20 @@ class ConfigManager:
         try:
             # Ensure directory exists
             os.makedirs(self.config_dir, exist_ok=True)
+            print(config_data)
+            # Verify all reference paths are included
+            ref_paths = [
+                "reference_audio_path", 
+                "reference_audio_path2", 
+                "reference_audio_path3"
+            ]
+            
+            # Log which references are being saved
+            for path_key in ref_paths:
+                if path_key in config_data and config_data[path_key]:
+                    logger.info(f"Saving reference path: {path_key}={config_data[path_key]}")
+                else:
+                    logger.info(f"No {path_key} provided in configuration")
             
             # Save configuration
             with open(self.config_path, 'w') as f:
@@ -65,6 +79,17 @@ class ConfigManager:
         try:
             with open(self.config_path, 'r') as f:
                 config_data = json.load(f)
+            
+            # Log which references are being loaded
+            ref_paths = [
+                "reference_audio_path", 
+                "reference_audio_path2", 
+                "reference_audio_path3"
+            ]
+            
+            for path_key in ref_paths:
+                if path_key in config_data and config_data[path_key]:
+                    logger.info(f"Loaded reference path: {path_key}={config_data[path_key]}")
             
             logger.info(f"Configuration loaded from {self.config_path}")
             return config_data

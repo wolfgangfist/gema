@@ -109,8 +109,8 @@ model_id = "openai/whisper-large-v3-turbo"
 # Whisper
 whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
     model_id, torch_dtype=torch.float16, low_cpu_mem_usage=True, use_safetensors=True
-)
-
+)            
+whisper_model.to("cuda")
 processor = AutoProcessor.from_pretrained(model_id)
 whisper_pipe = pipeline(
     "automatic-speech-recognition",
@@ -126,9 +126,10 @@ async def process_message_queue():
         message = await message_queue.get()
         for client in active_connections[:]:
             try:
-                if client.client_state == 1:
+                if client.client_state == WebSocketState.CONNECTED:
                     await client.send_json(message)
-            except:
+            except Exception as e:
+                logger.error(f"Error in message queue for client: {e}")
                 if client in active_connections:
                     active_connections.remove(client)
         message_queue.task_done()
@@ -186,9 +187,7 @@ def transcribe_audio(audio_data, sample_rate):
         except: pass
     try:
         with torch.jit.optimized_execution(False):
-            whisper_model.to("cuda")
             result = whisper_pipe(audio_np, generate_kwargs={"language": "english"}) 
-            whisper_model.to("cpu")
             return result["text"]
     except:
         return "[Transcription error]"
@@ -199,7 +198,7 @@ def initialize_models(config_data: CompanionConfig):
     warm‑up the voice model so no user‑visible latency is left.
     """
     global generator, llm, rag, vad_processor, config
-    config = config_data                         # keep for the worker
+    config = config_data                         
 
     logger.info("Loading LLM …")
     llm = LLMInterface(config_data.llm_path,
@@ -273,7 +272,12 @@ def on_speech_end(audio_data, sample_rate):
 
         speaker_counters[speaker_id] += 1
 
-        send_to_all_clients({"type": "transcription", "text": user_text})
+        # Send transcription to clients
+        asyncio.run_coroutine_threadsafe(
+            message_queue.put({"type": "transcription", "text": user_text}),
+            loop
+        )
+        
         threading.Thread(target=lambda: process_user_input(user_text, session_id), daemon=True).start()
     except Exception as e:
         logger.error(f"VAD callback failed: {e}")
@@ -322,10 +326,12 @@ def process_user_input(user_text, session_id="default"):
     system_prompt = config.system_prompt
     if rag_context:
         system_prompt += f"\n\nRelevant context:\n{rag_context}"
-    
-    torch.cuda.empty_cache()
 
-    send_to_all_clients({"type": "status", "message": "Thinking..."})
+    # Notify clients that we're thinking
+    asyncio.run_coroutine_threadsafe(
+        message_queue.put({"type": "status", "message": "Thinking..."}),
+        loop
+    )
     
     try:
         with llm_lock: 
@@ -360,11 +366,13 @@ def process_user_input(user_text, session_id="default"):
         
         threading.Thread(target=lambda: rag.add_conversation(user_text, ai_response), daemon=True).start()
         
-        send_to_all_clients({"type": "response", "text": ai_response})
+        # Send the response to clients
+        asyncio.run_coroutine_threadsafe(
+            message_queue.put({"type": "response", "text": ai_response}),
+            loop
+        )
 
         time.sleep(0.5)
-        
-        torch.cuda.empty_cache()
         
         threading.Thread(target=audio_generation_thread, args=(ai_response, output_file), daemon=True).start()
 
@@ -435,9 +443,10 @@ async def run_audio_generation(text, output_file):
     audio_generation_thread(text, output_file)
 
 def send_to_all_clients(message: dict):
+    """Send a message to all connected WebSocket clients"""
     for client in active_connections[:]:
         try:
-            if client.application_state == WebSocketState.CONNECTED:
+            if client.client_state == WebSocketState.CONNECTED:
                 asyncio.run_coroutine_threadsafe(client.send_json(message), loop)
                 logger.info(f"Sent message to client: {message}")
             else:
@@ -636,7 +645,10 @@ def audio_generation_thread(text, output_file):
         text_lower = preprocess_text_for_tts(text_lower)
         
         # Notify clients
-        send_to_all_clients({"type": "audio_status", "status": "generating"})
+        asyncio.run_coroutine_threadsafe(
+            message_queue.put({"type": "audio_status", "status": "generating"}),
+            loop
+        )
         
         # Estimate audio length
         words = text.split()
@@ -698,11 +710,14 @@ def audio_generation_thread(text, output_file):
                 audio_queue.put(chunk_array)
                 
                 # Send to clients
-                send_to_all_clients({
-                    "type": "audio_chunk",
-                    "audio": chunk_array.tolist(),
-                    "sample_rate": generator.sample_rate
-                })
+                asyncio.run_coroutine_threadsafe(
+                    message_queue.put({
+                        "type": "audio_chunk",
+                        "audio": chunk_array.tolist(),
+                        "sample_rate": generator.sample_rate
+                    }),
+                    loop
+                )
                 
             except queue.Empty:
                 # No results yet, keep checking
@@ -735,6 +750,7 @@ def audio_generation_thread(text, output_file):
         audio_queue.put(None)
         
         try:
+            # Send audio status to clients
             asyncio.run_coroutine_threadsafe(
                 message_queue.put({"type": "audio_status", "status": "complete"}),
                 loop
@@ -921,7 +937,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_connections.append(websocket)
     
-        
     saved = config_manager.load_config()
     if saved:
         await websocket.send_json({"type": "saved_config", "config": saved})
@@ -932,14 +947,57 @@ async def websocket_endpoint(websocket: WebSocket):
             
             if data["type"] == "config":
                 # Config handling
-                conf = CompanionConfig(**data["config"])
-                config_manager.save_config(data["config"])
-                initialize_models(conf)
-                await websocket.send_json({"type": "status", "message": "Models initialized and configuration saved"})
+                try:
+                    config_data = data["config"]
+                    
+                    logger.info(f"Received config data keys: {config_data.keys()}")
+
+                    for key in ["reference_audio_path", "reference_audio_path2", "reference_audio_path3",
+                               "reference_text", "reference_text2", "reference_text3"]:
+                        if key in config_data:
+                            logger.info(f"Config includes {key}: {config_data[key]}")
+                        else:
+                            logger.warning(f"Config missing {key}")
+                    
+                    conf = CompanionConfig(**config_data)
+                    
+                    saved = config_manager.save_config(config_data)
+                    
+                    if saved:
+                        initialize_models(conf)
+                        await websocket.send_json({"type": "status", "message": "Models initialized and configuration saved"})
+                    else:
+                        await websocket.send_json({"type": "error", "message": "Failed to save configuration"})
+                        
+                except Exception as e:
+                    logger.error(f"Error processing config: {str(e)}")
+                    await websocket.send_json({"type": "error", "message": f"Configuration error: {str(e)}"})
+                
                 
             elif data["type"] == "request_saved_config":
                 saved = config_manager.load_config()
                 await websocket.send_json({"type": "saved_config", "config": saved})
+            
+            elif data["type"] == "text_message":
+                user_text   = data["text"]
+                session_id  = data.get("session_id", "default")
+                logger.info(f"TEXT-MSG from client: {user_text!r}")
+
+                # If the model is already talking, queue the request but
+                if is_speaking:
+                    with user_input_lock:
+                        if len(pending_user_inputs) >= 3:
+                            pending_user_inputs = pending_user_inputs[-2:]
+                        pending_user_inputs.append((user_text, session_id))
+                    await websocket.send_json(
+                        {"type":"status","message":"Queued – I’ll answer in a moment"})
+                    continue                                # <-- was “return”
+
+                # normal path – treat text identical to a transcription
+                await message_queue.put({"type":"transcription","text":user_text})
+                threading.Thread(
+                    target=lambda: process_user_input(user_text, session_id),
+                    daemon=True).start()
                 
             elif data["type"] == "audio":
                 audio_data = np.array(data["audio"]).astype(np.float32)

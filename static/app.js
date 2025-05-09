@@ -23,6 +23,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.getElementById('llmPath').value = data.config.llm_path || "";
       document.getElementById('referenceAudio').value = data.config.reference_audio_path || "";
       document.getElementById('referenceText').value = data.config.reference_text || "";
+      document.getElementById('referenceAudio2').value = data.config.reference_audio_path2 || "";
+      document.getElementById('referenceText2').value  = data.config.reference_text2  || "";
+      document.getElementById('referenceAudio3').value = data.config.reference_audio_path3 || "";
+      document.getElementById('referenceText3').value  = data.config.reference_text3  || "";
 
       setTimeout(() => {
         if (data.config.mic_id) document.getElementById('micSelect').value = data.config.mic_id;
@@ -106,10 +110,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       llm_path: document.getElementById('llmPath').value,
       reference_audio_path: document.getElementById('referenceAudio').value,
       reference_text: document.getElementById('referenceText').value,
+      reference_audio_path2: document.getElementById('referenceAudio2').value,
+      reference_text2: document.getElementById('referenceText2').value,
+      reference_audio_path3: document.getElementById('referenceAudio3').value,
+      reference_text3: document.getElementById('referenceText3').value,
       mic_id: getSelectedMic(),
       output_id: getSelectedOutput(),
     };
     console.log("Sending config to backend...");
+    console.log(lastConfig)
     showLoading(true, "Initializing models, please wait...");
     ws.send(JSON.stringify({ type: "config", config: lastConfig }));
     // we wait for the backend to reply with model status before navigating

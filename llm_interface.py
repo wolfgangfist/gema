@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Any, Optional
 import torch
 from vllm import LLM, SamplingParams
@@ -16,7 +17,7 @@ class LLMInterface:
         self.llm = LLM(
             model=model_path,
             tensor_parallel_size=1,  # Adjust based on number of GPUs available
-            gpu_memory_utilization=0.45,
+            gpu_memory_utilization=0.6,
             max_model_len=max_tokens,
             swap_space=0,
             trust_remote_code=True,
@@ -28,6 +29,26 @@ class LLMInterface:
             "model_path": model_path,
             "max_tokens": max_tokens,
         }
+        
+    def trim_to_last_sentence(self, text: str) -> str:        
+        """
+        Return *text* truncated at the final full sentence boundary.
+        A boundary is considered to be any '.', '!' or '?' followed by
+        optional quotes/brackets, optional whitespace, and then end-of-string.
+
+        If no sentence terminator exists, the original text is returned.
+        """
+        # Regex explanation:
+        #   (.*?[.!?]["')\]]?)   any text lazily until a terminator
+        #   \s*$                 followed only by whitespace till end-of-string
+        m = re.match(r"^(.*?[.!?][\"')\]]?)\s*$", text, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        # Fall back to manual search (handles cases with additional text)
+        for i in range(len(text) - 1, -1, -1):
+            if text[i] in ".!?":
+                return text[: i + 1].strip()
+        return text.strip()
     
     def generate_response(self, system_prompt: str, user_message: str, conversation_history: str = "") -> str:
         """Generate a response from the LLM using chat-style prompt formatting.
@@ -50,7 +71,7 @@ class LLMInterface:
         sampling_params = SamplingParams(
             temperature=0.7,
             top_p=0.95,
-            max_tokens=512,
+            max_tokens=100,
             repetition_penalty=1.2,
             top_k=400,
             stop=["</s>", "<|endoftext|>", "<<USR>>", "<</USR>>", "<</SYS>>", 
@@ -63,7 +84,8 @@ class LLMInterface:
         
         # Extract and return the generated text
         if outputs and len(outputs) > 0:
-            return outputs[0].outputs[0].text.strip()
+            text = outputs[0].outputs[0].text
+            return self.trim_to_last_sentence(text)
         return ""
     
     def tokenize(self, text: str) -> List[int]:
