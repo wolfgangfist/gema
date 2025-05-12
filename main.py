@@ -547,7 +547,7 @@ def add_segment(text, speaker_id, audio_tensor):
             tokens = generator._text_tokenizer.encode(f"[{segment.speaker}]{segment.text}")
             total_tokens += len(tokens)
             if segment.audio is not None:
-                audio_frames = segment.audio.size(0) // 300  # Approximate frame count
+                audio_frames = segment.audio.size(0) // 285  # Approximate frame count
                 total_tokens += audio_frames
         
         # Remove oldest dynamic segments until we're under the token limit
@@ -559,7 +559,7 @@ def add_segment(text, speaker_id, audio_tensor):
             # Recalculate tokens for the removed segment
             removed_tokens = len(generator._text_tokenizer.encode(f"[{removed.speaker}]{removed.text}"))
             if removed.audio is not None:
-                removed_audio_frames = removed.audio.size(0) // 300
+                removed_audio_frames = removed.audio.size(0) // 285
                 removed_tokens += removed_audio_frames
             total_tokens -= removed_tokens
             
@@ -652,7 +652,7 @@ def audio_generation_thread(text, output_file):
         
         # Estimate audio length
         words = text.split()
-        avg_wpm = 160
+        avg_wpm = 100
         words_per_second = avg_wpm / 60
         estimated_seconds = len(words) / words_per_second
         max_audio_length_ms = int(estimated_seconds * 1000)
