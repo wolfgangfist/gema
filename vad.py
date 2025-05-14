@@ -25,6 +25,19 @@ class VoiceActivityDetector:
         
         print(f"VAD initialized with threshold {threshold}, frame size {self.frame_size}, silence duration {silence_duration}")
 
+    def reset(self) -> None:
+        self.is_speaking   = False
+        self.silent_frames = 0
+
+        if hasattr(self.model, "reset_states"):
+            self.model.reset_states()
+        elif hasattr(self.model, "reset_state"):
+            self.model.reset_state()
+        else:
+            for buf in ("h", "c"):
+                if hasattr(self.model, buf):
+                    getattr(self.model, buf).zero_()
+
     def process_audio_chunk(self, audio_chunk: np.ndarray) -> bool:
         # Prepare audio chunk
         if audio_chunk.ndim > 1:
@@ -51,8 +64,8 @@ class VoiceActivityDetector:
             audio_tensor = torch.tensor(chunk).to('cpu')
             
             # Get speech probability
-            with torch.no_grad():
-                speech_prob = self.model(audio_tensor, self.sample_rate).item()
+            
+            speech_prob = self.model(audio_tensor, self.sample_rate).item()
             
             speech_probs.append(speech_prob)
             

@@ -1,8 +1,8 @@
---extra-index-url=https://download.pytorch.org/whl/cu124
-vllm==0.6.6
-torch==2.5.1
-torchaudio==2.5.1
-torchvision==0.20.1
+--extra-index-url=https://download.pytorch.org/whl/cu128
+vllm==0.8.0
+torch==2.6.0
+torchaudio==2.6.0
+torchvision==0.21.0
 tokenizers==0.21.0
 transformers==4.49.0
 huggingface_hub==0.28.1

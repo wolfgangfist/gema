@@ -69,11 +69,11 @@ class LLMInterface:
         
         # Define sampling parameters (equivalent to the previous implementation)
         sampling_params = SamplingParams(
-            temperature=0.7,
+            temperature=1.0,
             top_p=0.95,
             max_tokens=100,
             repetition_penalty=1.2,
-            top_k=400,
+            top_k=200,
             stop=["</s>", "<|endoftext|>", "<<USR>>", "<</USR>>", "<</SYS>>", 
                   "<</USER>>", "<</ASSISTANT>>", "<|end_header_id|>", "<<ASSISTANT>>", 
                   "<|eot_id|>", "<|im_end|>", "user:", "User:", "user :", "User :"]

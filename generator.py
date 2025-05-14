@@ -146,7 +146,7 @@ class Generator:
 
         return torch.cat([text_tokens, audio_tokens], dim=0), torch.cat([text_masks, audio_masks], dim=0)
 
-    
+    @torch.inference_mode()
     def _decode_frames(self, frames):
         if not frames:
             return torch.tensor([])
@@ -544,7 +544,8 @@ def load_csm_1b_local(model_path: str, device: str = "cuda", audio_num_codebooks
 
     # Enable all CUDA optimizations
     torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cuda.enable_flash_sdp(True)
+    if hasattr(torch.backends.cuda, 'enable_flash_sdp'):
+        torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = True
 
@@ -823,7 +824,7 @@ def generate_streaming_audio(
     context: List[Segment],
     output_file: str,
     max_audio_length_ms: float = 90_000,
-    temperature: float = 0.8,
+    temperature: float = 1.0,
     topk: int = 50,
     play_audio: bool = False,
 ):
