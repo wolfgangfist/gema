@@ -243,5 +243,5 @@ David Browne
 ## Support me
 Support this project on Ko-fi: https://ko-fi.com/davidbrowne17
 
-##Transformers streaming
+## Transformers streaming
 If you want to use streaming with the Transformers implementation you can find it here: https://github.com/davidbrowne17/csm-streaming-tf
