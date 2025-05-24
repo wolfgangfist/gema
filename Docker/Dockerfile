@@ -41,11 +41,11 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Optional speedup
 #RUN pip install flash-attn
 
-ENV HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+ARG HUGGINGFACE_TOKEN
 RUN huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 
 # start
 #CMD ["bash"]
 ENV INTERNAL_PORT=${INTERNAL_PORT}
-CMD uvicorn api:app --host 0.0.0.0 --port $INTERNAL_PORT
+CMD uvicorn run_api:app --host 0.0.0.0 --port $INTERNAL_PORT

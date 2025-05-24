@@ -1,6 +1,6 @@
 networks:
   spark:
-    external: true
+    external: false
 
 services:
   csm-streaming-api:
@@ -9,18 +9,19 @@ services:
       dockerfile: Dockerfile
       args:
         BUILD_DATE: ${BUILD_VERSION}
+        HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
     container_name: csm-streaming-api
     stdin_open: true
     tty: true
     environment:
       - INTERNAL_PORT= ${INTERNAL_PORT}
       - NO_TORCH_COMPILE= ${NO_TORCH_COMPILE}
-      - HUGGINGFACE_TOKEN= ${HUGGINGFACE_TOKEN}
       - CSM_API_KEY= ${CSM_API_KEY}
     networks:
       - spark
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    runtime: nvidia
     security_opt:
       - "label=type:nvidia_container_t"
     deploy:
