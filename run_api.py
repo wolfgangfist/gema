@@ -16,11 +16,4 @@ def root():
     return {"status": "✅ CSM API is running"}
 
 import api.routes.health
-
-# --------------- Import health router ---------------
-#from api.routes.health import health_router
-#app.include_router(health_router)
-
-# --------------- Import speech router ---------------
-from api.routes.speech import speech_router
-app.include_router(speech_router)
+import api.routes.speech

@@ -1,9 +1,8 @@
 import io
+from run_api import app
 
 from fastapi import HTTPException, Depends
 from fastapi.responses import Response
-
-from fastapi import APIRouter
 
 from pydantic import BaseModel
 
@@ -16,9 +15,7 @@ class SpeechRequest(BaseModel):
     speaker: int = 0
     max_audio_length: int = 10000
 
-speech_router = APIRouter()
-
-@speech_router.post("/speech")
+@app.post("/speech")
 def generate_speech(req: SpeechRequest, _: str = Depends(verify_api_key)):
     print(f"🎙️ Generating speech for: '{req.text}' with speaker {req.speaker}")
     try:
