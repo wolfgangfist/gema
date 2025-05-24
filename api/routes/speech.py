@@ -8,6 +8,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from api.authentication import verify_api_key
+#---------------------- end of headers ----------------------
+
 
 class SpeechRequest(BaseModel):
     text: str = "Hello Josh"
@@ -16,7 +18,7 @@ class SpeechRequest(BaseModel):
 
 speech_router = APIRouter()
 
-@speech_router.post("/speak")
+@speech_router.post("/speech")
 def generate_speech(req: SpeechRequest, _: str = Depends(verify_api_key)):
     print(f"🎙️ Generating speech for: '{req.text}' with speaker {req.speaker}")
     try:
