@@ -62,7 +62,7 @@ CSM_API_KEY=csmapikey_000000
 
 **Need help or additional doc?**
 
-click here [csm-streaming](https://github.com/davidbrowne17/csm-streaming)
+click here [csm-streaming](https://github.com/davidbrowne17/csm-streaming) or here [csm](https://github.com/SesameAILabs/csm)
 
 ## Misuse and abuse ⚠️
 
@@ -80,7 +80,7 @@ By using this model, you agree to comply with all applicable laws and ethical gu
 Johan Schalkwyk, Ankit Kumar, Dan Lyth, Sefik Emre Eskimez, Zack Hodari, Cinjon Resnick, Ramon Sanabria, Raven Jiang, and the Sesame team.
 
 ## Streaming, Realtime Demo and Finetuning Implementation
-David Browne
+David Browne, [csm-streaming](https://github.com/davidbrowne17/csm-streaming)
 
 ## Api, Websocket, Docker
 Amir Nobandegan
