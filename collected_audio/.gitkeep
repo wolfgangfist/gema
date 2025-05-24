@@ -1,0 +1,4 @@
+# This file is intentionally left blank.
+# It's used to ensure that the 'collected_audio' directory is tracked by Git,
+# even when it's empty. This is important because the application expects
+# this directory to exist for storing uploaded audio files.

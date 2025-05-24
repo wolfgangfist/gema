@@ -138,6 +138,41 @@ CSM is trained to be an audio generation model and not a general-purpose multimo
 
 The model has some capacity for non-English languages due to data contamination in the training data, but it likely won't do well.
 
+## CSM Training Data Collection UI
+
+This project includes a simple web-based UI for collecting speech samples, which can be useful for creating datasets for potential CSM (Conversational Speech Model) training or fine-tuning.
+
+### Purpose
+
+The primary goal of this UI is to allow users to easily record and submit audio samples. These samples are saved on the server and can be used to build custom speech datasets.
+
+### How to Run
+
+1.  **Install Dependencies:** Ensure Flask is installed. It's included in `requirements.txt`:
+    ```bash
+    pip install -r requirements.txt
+    ```
+2.  **Run the Flask Application:** Navigate to the project's root directory and execute:
+    ```bash
+    python app_data_collection.py
+    ```
+3.  **Access the UI:** Open your web browser and go to `http://127.0.0.1:5000/`.
+
+### How it Works
+
+*   The web interface provides simple controls to record audio directly in the browser using your microphone.
+*   Once a recording is complete, it can be previewed and then uploaded to the server.
+*   The server saves the audio and associated metadata.
+
+### Data Storage
+
+*   **Audio Files:** Recorded audio is saved as WAV files in the `collected_audio/` directory within the project. Each file is given a unique name.
+*   **Metadata:** Information about each recording (such as a unique recording ID, the corresponding audio filename, timestamp, duration in seconds, sample rate, number of channels, and sample width) is stored in `collected_audio/metadata.jsonl`. Each line in this file is a JSON object representing one recording's metadata.
+
+### Important Note
+
+This is a basic data collection tool. The quality and suitability of the collected audio for actual model training will heavily depend on the recording conditions (e.g., microphone quality, background noise levels, speaker consistency). This tool does not perform any transcription or automated quality assessment of the audio.
+
 ## Misuse and abuse ⚠️
 
 This project provides a high-quality speech generation model for research and educational purposes. While we encourage responsible and ethical use, we **explicitly prohibit** the following:

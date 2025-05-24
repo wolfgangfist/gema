@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CSM Audio Data Collection</title>
+    <style>
+        /* Optional: very basic styling for button layout */
+        body { font-family: sans-serif; margin: 20px; }
+        .controls button { margin: 5px; padding: 10px 15px; font-size: 1em; }
+        #audioPlayback { margin-top: 20px; width: 100%; max-width: 500px; }
+        #statusMessages { margin-top: 15px; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>Record Audio for CSM Training</h1>
+    <p>Press "Record" to start recording your voice. Press "Stop" to end recording. You can then review and upload the audio.</p>
+
+    <div class="controls">
+        <button id="recordButton">Record</button>
+        <button id="stopButton" disabled>Stop</button>
+        <button id="uploadButton" disabled>Upload</button>
+    </div>
+
+    <audio id="audioPlayback" controls></audio>
+    
+    <p id="statusMessages"></p>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const recordButton = document.getElementById('recordButton');
+            const stopButton = document.getElementById('stopButton');
+            const uploadButton = document.getElementById('uploadButton');
+            const audioPlayback = document.getElementById('audioPlayback');
+            const statusMessages = document.getElementById('statusMessages');
+
+            let mediaRecorder;
+            let audioChunks = [];
+            let audioBlob;
+
+            recordButton.onclick = async () => {
+                try {
+                    recordButton.disabled = true;
+                    stopButton.disabled = false;
+                    uploadButton.disabled = true;
+                    statusMessages.textContent = 'Requesting microphone access...';
+                    audioChunks = []; // Clear previous chunks
+
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    statusMessages.textContent = 'Microphone access granted.';
+                    
+                    // Try common MIME types, Opus in WebM is a good default
+                    const mimeTypes = [
+                        'audio/webm;codecs=opus',
+                        'audio/ogg;codecs=opus',
+                        'audio/wav', // Less likely to be natively recorded, but good to have as a fallback
+                        'audio/webm', 
+                        'audio/mp4' // For Safari if others fail
+                    ];
+                    let selectedMimeType = '';
+                    for (const mimeType of mimeTypes) {
+                        if (MediaRecorder.isTypeSupported(mimeType)) {
+                            selectedMimeType = mimeType;
+                            break;
+                        }
+                    }
+                    if (!selectedMimeType) {
+                        statusMessages.textContent = 'No suitable MIME type found for MediaRecorder.';
+                        console.error('No suitable MIME type found.');
+                        recordButton.disabled = false;
+                        stopButton.disabled = true;
+                        return;
+                    }
+                    console.log("Using MIME type: " + selectedMimeType);
+
+
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
+
+                    mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0) {
+                            audioChunks.push(event.data);
+                        }
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        // Use the selectedMimeType for creating the blob
+                        audioBlob = new Blob(audioChunks, { type: selectedMimeType });
+                        audioPlayback.src = URL.createObjectURL(audioBlob);
+                        audioChunks = []; // Clear for next recording
+                        
+                        recordButton.disabled = false;
+                        stopButton.disabled = true;
+                        uploadButton.disabled = false;
+                        statusMessages.textContent = 'Recording stopped. Ready to play or upload.';
+                        
+                        // Stop all tracks from the stream to release the microphone
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+
+                    mediaRecorder.start();
+                    statusMessages.textContent = 'Recording...';
+
+                } catch (error) {
+                    console.error('Error during recording setup:', error);
+                    statusMessages.textContent = `Error accessing microphone: ${error.message}`;
+                    recordButton.disabled = false;
+                    stopButton.disabled = true;
+                    uploadButton.disabled = true;
+                }
+            };
+
+            stopButton.onclick = () => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop();
+                    // UI updates and status are handled in mediaRecorder.onstop
+                } else {
+                    statusMessages.textContent = 'No active recording to stop.';
+                }
+            };
+
+            uploadButton.onclick = async () => {
+                if (!audioBlob) {
+                    statusMessages.textContent = 'No audio recorded to upload.';
+                    return;
+                }
+
+                statusMessages.textContent = 'Uploading audio...';
+                uploadButton.disabled = true; // Disable while uploading
+
+                const formData = new FormData();
+                // The server will save it as .wav, filename here is mostly for the form-data part
+                formData.append('audio_file', audioBlob, 'recording.webm'); 
+
+                try {
+                    const response = await fetch('/upload_audio', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json(); // Assuming server sends JSON
+                        statusMessages.textContent = `Upload successful: ${result.message} (Filename: ${result.filename})`;
+                        // uploadButton remains disabled to encourage new recording
+                    } else {
+                        const errorResult = await response.text(); // Or response.json() if server sends JSON errors
+                        statusMessages.textContent = `Upload failed: ${response.status} - ${errorResult}`;
+                        uploadButton.disabled = false; // Re-enable if upload failed
+                    }
+                } catch (error) {
+                    console.error('Error during upload:', error);
+                    statusMessages.textContent = `Error uploading audio: ${error.message}`;
+                    uploadButton.disabled = false; // Re-enable if upload failed
+                }
+            };
+        });
+    </script>
+</body>
+</html>
