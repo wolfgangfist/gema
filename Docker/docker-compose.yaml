@@ -1,0 +1,32 @@
+networks:
+  spark:
+    external: true
+
+services:
+  csm-streaming-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_VERSION}
+    container_name: csm-streaming-api
+    stdin_open: true
+    tty: true
+    environment:
+      - INTERNAL_PORT= ${INTERNAL_PORT}
+      - NO_TORCH_COMPILE= ${NO_TORCH_COMPILE}
+      - HUGGINGFACE_TOKEN= ${HUGGINGFACE_TOKEN}
+      - CSM_API_KEY= ${CSM_API_KEY}
+    networks:
+      - spark
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    security_opt:
+      - "label=type:nvidia_container_t"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu, video]
