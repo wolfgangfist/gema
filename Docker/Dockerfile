@@ -26,9 +26,6 @@ RUN git clone https://github.com/nobandegani/csm-streaming-api.git
 # Set working directory to the cloned repo
 WORKDIR /app/csm-streaming-api
 
-# Clone pull
-RUN git pull
-
 # Create and activate virtual environment, install dependencies
 RUN python3 -m venv $VIRTUAL_ENV && \
     . $VIRTUAL_ENV/bin/activate && \
@@ -46,6 +43,4 @@ RUN huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 
 # start
-#CMD ["bash"]
-ENV API_INTERNAL_PORT=${API_INTERNAL_PORT}
-CMD uvicorn run_api:app --host 0.0.0.0 --port $API_INTERNAL_PORT
+CMD bash -c "python setup.py && python run.py && uvicorn run_api:app --host 0.0.0.0 --port $API_INTERNAL_PORT"
