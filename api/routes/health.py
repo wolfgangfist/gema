@@ -1,8 +1,8 @@
-from fastapi import APIRouter
+from run_api import app
 import torch
-health_router = APIRouter()
+#health_router = APIRouter()
 
-@health_router.get("/health")
+@app.get("/health")
 def health_check():
     return {
         "status": "ok",
