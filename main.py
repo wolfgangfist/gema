@@ -1213,4 +1213,5 @@ async def crud_ui(request: Request):
 if __name__ == "__main__":
     import uvicorn
     threading.Thread(target=lambda: asyncio.run(loop.run_forever()), daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    INTERNAL_PORT = os.getenv("INTERNAL_PORT", 8888)
+    uvicorn.run(app, host="0.0.0.0", port=INTERNAL_PORT)
