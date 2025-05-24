@@ -22,12 +22,11 @@ if not torch.cuda.is_available():
 
 # --------------- Load model ---------------
 print("🚀 Loading CSM model onto GPU...")
-generator = load_csm_1b(device="cuda")
+#generator = load_csm_1b(device="cuda")
 print("✅ Model loaded.")
 
-# Make sure voices folder exists
-os.makedirs("voices", exist_ok=True)
 
+INTERNAL_PORT = os.getenv("INTERNAL_PORT", 8888)
 # --------------- Api key ---------------
 API_KEY = os.getenv("CSM_API_KEY", "your-secret-key")
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
@@ -49,7 +48,7 @@ def verify_api_key(auth_header: str = Depends(api_key_header)):
 
 @app.on_event("startup")
 async def startup_event():
-    print("✅ CSM API is live and listening on http://0.0.0.0:5537/speak")
+    print(f"✅ CSM API is live and listening on http://0.0.0.0:{INTERNAL_PORT}/")
 
 @app.get("/")
 def root():
@@ -71,15 +70,15 @@ def generate_speech(req: SpeechRequest, _: str = Depends(verify_api_key)):
     print(f"🎙️ Generating speech for: '{req.text}' with speaker {req.speaker}")
     try:
         # Generate audio
-        audio = generator.generate(
-            text=req.text,
-            speaker=req.speaker,
-            context=[],
-            max_audio_length_ms=req.max_audio_length,
-        )
+        #audio = generator.generate(
+        #    text=req.text,
+        #    speaker=req.speaker,
+        #    context=[],
+        #    max_audio_length_ms=req.max_audio_length,
+        #)
 
         buffer = io.BytesIO()
-        torchaudio.save(buffer, audio.unsqueeze(0).cpu(), generator.sample_rate, format="wav")
+        #torchaudio.save(buffer, audio.unsqueeze(0).cpu(), generator.sample_rate, format="wav")
         buffer.seek(0)
 
         print(f"✅ Audio generated successfully")
