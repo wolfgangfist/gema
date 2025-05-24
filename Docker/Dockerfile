@@ -47,5 +47,5 @@ RUN huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 # start
 #CMD ["bash"]
-ENV INTERNAL_PORT=${INTERNAL_PORT}
-CMD uvicorn run_api:app --host 0.0.0.0 --port $INTERNAL_PORT
+ENV API_INTERNAL_PORT=${API_INTERNAL_PORT}
+CMD uvicorn run_api:app --host 0.0.0.0 --port $API_INTERNAL_PORT
