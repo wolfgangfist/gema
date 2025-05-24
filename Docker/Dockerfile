@@ -43,4 +43,4 @@ RUN huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 
 # start
-CMD bash -c "python setup.py && python run.py && uvicorn run_api:app --host 0.0.0.0 --port $API_INTERNAL_PORT"
+CMD bash -c "python setup.py && python main.py && uvicorn run_api:app --host 0.0.0.0 --port $API_INTERNAL_PORT"
