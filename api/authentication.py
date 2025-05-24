@@ -9,7 +9,7 @@ api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 if API_KEY == "your-secret-key":
     print("❌ No CSM_API_KEY environment variable set. Using default insecure key.")
 else:
-    print("✅ CSM_API_KEY is set from environment.")
+    print(f"✅ CSM_API_KEY is set from environment: {API_KEY}")
 
 def verify_api_key(auth_header: str = Depends(api_key_header)):
     if not auth_header:
