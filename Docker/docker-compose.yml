@@ -14,8 +14,7 @@ services:
     stdin_open: true
     tty: true
     environment:
-      - API_INTERNAL_PORT=${API_INTERNAL_PORT}
-      - DEMO_INTERNAL_PORT=${DEMO_INTERNAL_PORT}
+      - INTERNAL_PORT=${INTERNAL_PORT}
       - NO_TORCH_COMPILE=${NO_TORCH_COMPILE}
       - CSM_API_KEY= ${CSM_API_KEY}
     volumes:
@@ -23,8 +22,7 @@ services:
     networks:
       - spark
     ports:
-      - "${API_EXTERNAL_PORT}:${API_INTERNAL_PORT}"
-      - "${DEMO_EXTERNAL_PORT}:${DEMO_INTERNAL_PORT}"
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
     runtime: nvidia
     security_opt:
       - "label=type:nvidia_container_t"
