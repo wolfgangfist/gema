@@ -1213,5 +1213,9 @@ async def crud_ui(request: Request):
 if __name__ == "__main__":
     import uvicorn
     threading.Thread(target=lambda: asyncio.run(loop.run_forever()), daemon=True).start()
+    if torch.cuda.is_available():
+        print("✅ CUDA is available. ready to go.")
+    else:
+        print("❌ CUDA is not available. This Demo requires a GPU.")
     INTERNAL_PORT = int(os.getenv("INTERNAL_PORT", 8888))
     uvicorn.run(app, host="0.0.0.0", port=INTERNAL_PORT)
