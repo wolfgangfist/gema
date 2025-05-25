@@ -21,7 +21,10 @@ class LLMInterface:
         print("torch.cuda.device_count():", torch.cuda.device_count())
         print("torch.cuda.get_device_name(0):", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
 
-        dtype="auto"
+        if torch.cuda.is_available():
+            device_dtype = "float16"
+        else:
+            device_dtype = "auto"
 
         # VLLM configuration
         self.llm = LLM(
@@ -31,7 +34,7 @@ class LLMInterface:
             max_model_len=max_tokens,
             swap_space=0,
             trust_remote_code=True,
-            dtype=dtype,
+            dtype=device_dtype,
         )
         
         # Store configuration for reference
