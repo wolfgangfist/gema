@@ -26,6 +26,8 @@ class LLMInterface:
         else:
             device_dtype = "auto"
 
+        logger.info(f"Using dtype: {device_dtype}")
+
         # VLLM configuration
         self.llm = LLM(
             model=model_path,
