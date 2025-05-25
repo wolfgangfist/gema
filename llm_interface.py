@@ -13,6 +13,10 @@ class LLMInterface:
             n_threads (int, optional): Number of CPU threads. Defaults to 8.
             gpu_layers (int, optional): Not used in VLLM, maintained for API compatibility.
         """
+
+        logger.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+        logger.info(f"Loading model: {model_path}")
+
         # VLLM configuration
         self.llm = LLM(
             model=model_path,
