@@ -14,8 +14,10 @@ class LLMInterface:
             gpu_layers (int, optional): Not used in VLLM, maintained for API compatibility.
         """
 
-        logger.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
-        logger.info(f"Loading model: {model_path}")
+        print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+        print(f"Loading model: {model_path}")
+        
+        dtype="auto"
 
         # VLLM configuration
         self.llm = LLM(
@@ -25,7 +27,7 @@ class LLMInterface:
             max_model_len=max_tokens,
             swap_space=0,
             trust_remote_code=True,
-            dtype=torch.float16,
+            dtype=dtype,
         )
         
         # Store configuration for reference
