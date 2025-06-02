@@ -8,8 +8,8 @@ sampling_params = SamplingParams(temperature=0.7, top_p=0.95, max_tokens=50)
 
 llm = LLM(
     model=model_path,
-    device="cuda",
-    enforce_eager=True  # 👈 disables async output that breaks in Docker
+    enforce_eager=True,  # ✅ force eager mode to avoid async
+    trust_remote_code=True  # ✅ required for some models using custom code
 )
 
 prompt = "What is the capital of France?"
