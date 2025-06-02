@@ -14,19 +14,19 @@ class LLMInterface:
             gpu_layers (int, optional): Not used in VLLM, maintained for API compatibility.
         """
 
-        print(f"Loading model: {model_path}")
+        logger.info(f"Loading model: {model_path}")
 
-        print("torch.cuda.is_available():", torch.cuda.is_available())
-        print("torch version:", torch.__version__)
-        print("torch.cuda.device_count():", torch.cuda.device_count())
-        print("torch.cuda.get_device_name(0):", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
+        logger.info("torch.cuda.is_available():", torch.cuda.is_available())
+        logger.info("torch version:", torch.__version__)
+        logger.info("torch.cuda.device_count():", torch.cuda.device_count())
+        logger.info("torch.cuda.get_device_name(0):", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
 
         if torch.cuda.is_available():
             device_dtype = str(torch.float16)
         else:
             device_dtype = "auto"
 
-        print(f"Using dtype: {device_dtype}")
+        logger.info(f"Using dtype: {device_dtype}")
 
         # VLLM configuration
         self.llm = LLM(
