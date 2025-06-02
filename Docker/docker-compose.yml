@@ -17,6 +17,7 @@ services:
       - CSM_API_KEY=${CSM_API_KEY}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - VLLM_PLATFORM=default
     volumes:
       - "${VOLUME_MAIN}:/csm-streaming-api"
     networks:
