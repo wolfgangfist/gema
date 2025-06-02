@@ -10,6 +10,7 @@ services:
       args:
         BUILD_DATE: ${BUILD_VERSION}
         HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
+    command: [ 'python', 'main.py' ]
     container_name: csm-streaming-api
     environment:
       - INTERNAL_PORT=${INTERNAL_PORT}

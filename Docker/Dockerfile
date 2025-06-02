@@ -18,8 +18,4 @@ RUN pip install -r requirements.txt
 ARG HUGGINGFACE_TOKEN
 RUN huggingface-cli login --token $HUGGINGFACE_TOKEN
 
-# setup
 RUN python setup.py
-
-# start
-CMD python main.py
