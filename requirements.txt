@@ -1,5 +1,5 @@
 --extra-index-url=https://download.pytorch.org/whl/cu128
-vllm[triton]
+vllm[triton]>=0.9.0
 torch==2.6.0
 torchaudio==2.6.0
 torchvision==0.21.0
