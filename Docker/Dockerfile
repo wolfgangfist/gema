@@ -3,7 +3,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 WORKDIR /csm-streaming-api
 
 RUN apt-get update
-RUN apt-get install python3.12 -y
+RUN apt-get install python3.10 -y
 RUN apt-get install python-is-python3 -y
 RUN apt-get install python3-pip -y
 RUN apt-get install python3-venv -y
@@ -14,6 +14,7 @@ RUN apt-get install libportaudio2  -y
 RUN apt-get install portaudio19-dev -y
 
 RUN git clone https://github.com/nobandegani/csm-streaming-api.git --single-branch .
+RUN git pull
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
