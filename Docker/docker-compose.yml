@@ -11,14 +11,11 @@ services:
         BUILD_DATE: ${BUILD_VERSION}
         HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
     container_name: csm-streaming-api
-    stdin_open: true
-    tty: true
     environment:
       - INTERNAL_PORT=${INTERNAL_PORT}
-      - NO_TORCH_COMPILE=${NO_TORCH_COMPILE}
       - CSM_API_KEY= ${CSM_API_KEY}
     volumes:
-      - "${VOLUME_MAIN}:/app/csm-streaming-api"
+      - "${VOLUME_MAIN}:/csm-streaming-api"
     networks:
       - spark
     ports:
