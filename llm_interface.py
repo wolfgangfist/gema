@@ -14,6 +14,8 @@ class LLMInterface:
             gpu_layers (int, optional): Not used in VLLM, maintained for API compatibility.
         """
 
+        model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+
         logger.info(f"Loading model: {model_path}")
         logger.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
         logger.info(f"torch version: {torch.__version__}")
