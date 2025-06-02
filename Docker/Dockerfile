@@ -1,9 +1,9 @@
-nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 WORKDIR /csm-streaming-api
 
 RUN apt-get update
-RUN apt-get install python3.10 -y
+RUN apt-get install python3.12 -y
 RUN apt-get install python-is-python3 -y
 RUN apt-get install python3-pip -y
 RUN apt-get install python3-venv -y

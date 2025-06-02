@@ -24,7 +24,7 @@ class LLMInterface:
         logger.info(f"torch.cuda.get_device_name(0): {device_name}")
 
         if torch.cuda.is_available():
-            device_dtype = torch.float16
+            device_dtype = "float16"
         else:
             device_dtype = "auto"
 
@@ -38,6 +38,7 @@ class LLMInterface:
             max_model_len=max_tokens,
             swap_space=0,
             trust_remote_code=True,
+            dtype=device_dtype
         )
         
         # Store configuration for reference
