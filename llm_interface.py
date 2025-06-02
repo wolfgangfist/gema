@@ -22,11 +22,11 @@ class LLMInterface:
         print("torch.cuda.get_device_name(0):", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
 
         if torch.cuda.is_available():
-            device_dtype = "float16"
+            device_dtype = str(torch.float16)
         else:
             device_dtype = "auto"
 
-        logger.info(f"Using dtype: {device_dtype}")
+        print(f"Using dtype: {device_dtype}")
 
         # VLLM configuration
         self.llm = LLM(
