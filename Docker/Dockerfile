@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 WORKDIR /csm-streaming-api
 
