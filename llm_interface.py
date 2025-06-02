@@ -38,7 +38,6 @@ class LLMInterface:
             max_model_len=max_tokens,
             swap_space=0,
             trust_remote_code=True,
-            dtype=device_dtype,
         )
         
         # Store configuration for reference
