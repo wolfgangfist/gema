@@ -15,15 +15,14 @@ class LLMInterface:
         """
 
         logger.info(f"Loading model: {model_path}")
-
-        logger.info("torch.cuda.is_available():", torch.cuda.is_available())
-        logger.info("torch version:", torch.__version__)
-        logger.info("torch.cuda.device_count():", torch.cuda.device_count())
+        logger.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+        logger.info(f"torch version: {torch.__version__}")
+        logger.info(f"torch.cuda.device_count(): {torch.cuda.device_count()}")
         device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
-        logger.info(f"torch.cuda.get_device_name(0):{device_name}")
+        logger.info(f"torch.cuda.get_device_name(0): {device_name}")
 
         if torch.cuda.is_available():
-            device_dtype = str(torch.float16)
+            device_dtype = torch.float16
         else:
             device_dtype = "auto"
 
