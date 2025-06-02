@@ -4,7 +4,7 @@ import torch
 from vllm import LLM, SamplingParams
 
 class LLMInterface:
-    def __init__(self, model_path: str, max_tokens: int = 8192, n_threads: int = 8, gpu_layers: int = -1):
+    def __init__(self, logger, model_path: str, max_tokens: int = 8192, n_threads: int = 8, gpu_layers: int = -1):
         """Initialize the LLM interface using VLLM with a given model.
         
         Args:

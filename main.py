@@ -203,7 +203,7 @@ def initialize_models(config_data: CompanionConfig):
     config = config_data                         
 
     logger.info("Loading LLM …")
-    llm = LLMInterface(config_data.llm_path,
+    llm = LLMInterface(logger, config_data.llm_path,
                        config_data.max_tokens)
 
     logger.info("Loading RAG …")
